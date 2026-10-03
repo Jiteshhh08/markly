@@ -169,11 +169,17 @@ before(async () => {
 
 after(async () => {
   // Guarded: if before() failed, servers may be undefined — never mask the
-  // original error with a TypeError.
+  // original error with a TypeError. closeAllConnections first so keep-alive
+  // sockets can't wedge teardown (runner looked hung although green).
   await cleanupE2E(createdIdsHolder.ids).catch(() => {});
   await mongoose.disconnect().catch(() => {});
-  if (server) await new Promise((r) => server.close(r));
-  if (stub) await new Promise((r) => stub.close(r));
+  for (const s of [server, stub]) {
+    if (!s) continue;
+    try {
+      s.closeAllConnections?.();
+    } catch { /* ignore */ }
+    await new Promise((r) => s.close(r));
+  }
 });
 
 describe("STAGE7 e2e pipeline (register → generate → persist → logout)", () => {
@@ -212,6 +218,11 @@ describe("STAGE7 e2e pipeline (register → generate → persist → logout)", (
     const list = await raw("GET", "/api/v1/assignments", { cookie });
     assert.equal(list.status, 200);
     assert.ok(list.data.assignments.some((a) => a.id === assignmentId), "generated id must be listed");
+    // Summaries must carry card fields: the board renders from these before
+    // the drawer lazy-loads full content (hollow-card regression).
+    const listed = list.data.assignments.find((a) => a.id === assignmentId);
+    assert.equal(listed.subject, "DBMS");
+    assert.equal(listed.aim, "Explore subqueries in SQL");
 
     const detail = await raw("GET", `/api/v1/assignments/${assignmentId}`, { cookie });
     assert.equal(detail.status, 200);
@@ -285,6 +296,34 @@ describe("STAGE7 e2e pipeline (register → generate → persist → logout)", (
       body: { aim: "Explore subqueries in SQL" },
     });
     assert.equal(gen.status, 401);
+  });
+
+  it("jobs path generates end to end (enqueue → poll → completed → materializes)", async () => {
+    // The frontend creation flow commits through jobs so refresh mid-flight
+    // loses nothing; this pins that path against the stub AI service.
+    const enq = await raw("POST", "/api/v1/jobs", {
+      body: { type: "generate", input: { aim: "Explore subqueries in SQL", subject: "DBMS" } },
+      cookie,
+    });
+    assert.equal(enq.status, 202);
+    const jobId = enq.data.job.id;
+    let materialized = null;
+    const deadline = Date.now() + 30000;
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 1000));
+      const poll = await raw("GET", `/api/v1/jobs/${jobId}`, { cookie });
+      assert.equal(poll.status, 200);
+      assert.notEqual(poll.data.job.status, "failed", `job failed: ${poll.data.job.error}`);
+      if (poll.data.job.status === "completed" && poll.data.job.assignmentId) {
+        materialized = poll.data.job.assignmentId;
+        break;
+      }
+    }
+    assert.ok(materialized, "job must complete with an assignment id");
+    track(materialized);
+    const detail = await raw("GET", `/api/v1/assignments/${materialized}`, { cookie });
+    assert.equal(detail.status, 200);
+    assert.ok(detail.data.content?.title, "materialized assignment must carry content");
   });
 
   it("logout ends the session; further generation requires login", async () => {
