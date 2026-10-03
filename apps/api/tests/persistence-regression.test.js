@@ -76,9 +76,11 @@ before(async () => {
 });
 
 after(async () => {
+  // Guarded: if before() failed (e.g. test DB unreachable), server is
+  // undefined — report the original error, don't mask it with a TypeError.
   await cleanupTestDocs().catch(() => {});
   await mongoose.disconnect().catch(() => {});
-  await new Promise((resolve) => server.close(resolve));
+  if (server) await new Promise((resolve) => server.close(resolve));
 });
 
 function uniq(prefix) {
