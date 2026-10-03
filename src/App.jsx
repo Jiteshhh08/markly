@@ -1,21 +1,30 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  Badge,
+  Button,
+  EmptyState,
+  ErrorState,
+  Field,
+  LoadingRows,
+  ModalShell,
+  PageHeader,
+  SearchBar,
+  StatusBadge,
+  inputCls,
+} from './components/ui.jsx'
 
 const API_BASE = import.meta.env.VITE_API_URL ?? 'http://127.0.0.1:4000'
 
 // No browser storage anywhere in this app: board state lives in React state
 // (gone on reload), records live in MongoDB via the API, and the auth token
 // lives in memory (reloading logs you out — by design).
-
-// Auth headers for every API call (no-op when logged out; API runs open dev mode).
 let memoryToken = ''
 function authHeaders(extra = {}) {
   return memoryToken ? { ...extra, Authorization: `Bearer ${memoryToken}` } : extra
 }
 
-// credentials:'include' lets the httpOnly session cookie ride along
-// (required cross-site in production, harmless same-origin in dev).
-// Transport failures surface here as friendly product copy: callers show
-// err.message verbatim, so "Failed to fetch" must never escape this wrapper.
+// credentials:'include' lets the httpOnly session cookie ride along.
+// Transport failures surface here as friendly product copy.
 async function apiFetch(url, options = {}) {
   try {
     return await fetch(url, { credentials: 'include', ...options })
@@ -25,7 +34,7 @@ async function apiFetch(url, options = {}) {
   }
 }
 
-// Server record -> board card (keyed by record id so reloads stay consistent).
+// Server record -> assignment (keyed by record id so reloads stay consistent).
 function recordToIssue(record) {
   const c = record.content ?? {}
   return {
@@ -44,6 +53,7 @@ function recordToIssue(record) {
     stale: false,
     record,
     createdAt: record.createdAt ?? new Date().toISOString(),
+    updatedAt: record.updatedAt ?? record.createdAt ?? new Date().toISOString(),
   }
 }
 
@@ -52,11 +62,11 @@ function recordToIssue(record) {
 const SUBJECTS = ['DBMS', 'DSA', 'UHV', 'DLDCA', 'Professional Skills / AWS']
 
 const SUBJECT_META = {
-  DBMS: { color: '#0C66E4', bg: '#E9F2FF' },
-  DSA: { color: '#1F8455', bg: '#DCFFF1' },
-  UHV: { color: '#E56910', bg: '#FFF7D6' },
-  DLDCA: { color: '#6E5DC6', bg: '#F3F0FF' },
-  'Professional Skills / AWS': { color: '#0E7C86', bg: '#DDF9FB' },
+  DBMS: { color: '#1A4543', bg: '#E1EAE5' },
+  DSA: { color: '#3E6B5E', bg: '#E2EDE6' },
+  UHV: { color: '#8A5F22', bg: '#F8EDD2' },
+  DLDCA: { color: '#3D5A5C', bg: '#E0E8E8' },
+  'Professional Skills / AWS': { color: '#2E6A66', bg: '#DDE8E4' },
 }
 
 const DIFFICULTIES = ['Introductory', 'Intermediate', 'Advanced']
@@ -65,12 +75,6 @@ const EXAMPLES = [
   { aim: 'Explore subqueries in SQL', subject: 'DBMS', experimentNumber: '7', technology: 'SQL', description: 'Single-row and multi-row subqueries with IN, EXISTS and derived tables.' },
   { aim: 'Implement binary search tree traversals', subject: 'DSA', experimentNumber: '4', technology: 'Java', description: 'Inorder, preorder and postorder traversals with complexity analysis.' },
   { aim: 'Study harmony in professional relationships', subject: 'UHV', experimentNumber: '3', technology: '', description: 'Trust, respect and affection as foundational values in relationships.' },
-]
-
-const COLUMNS = [
-  { id: 'todo', title: 'To Do' },
-  { id: 'inprogress', title: 'In Progress' },
-  { id: 'done', title: 'Done' },
 ]
 
 const EDITABLE_SECTIONS = ['title', 'aim', 'objectives', 'theory', 'steps', 'conclusion']
@@ -103,14 +107,66 @@ function timeAgo(iso) {
   return `${Math.floor(h / 24)}d ago`
 }
 
+function fullDate(iso) {
+  const t = new Date(iso ?? '')
+  if (Number.isNaN(t.getTime())) return '—'
+  return t.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })
+}
+
 function subjectStyle(subject) {
-  return SUBJECT_META[subject] ?? { color: '#44546F', bg: '#F1F2F4' }
+  return SUBJECT_META[subject] ?? { color: '#35413F', bg: '#EFECE3' }
+}
+
+/* --------------------------- identity + greeting -------------------------- */
+// Session shape: { email, name, avatarUrl, id } — name/avatar come from the
+// authenticated profile (GET /api/v1/auth/me, enriched server-side from the
+// same store register/login use). Nothing is hardcoded; when the provider
+// has no name, the email local-part is prettified as a last resort.
+
+function displayNameOf(session) {
+  const n = (session?.name ?? '').trim()
+  if (n) return n
+  const local = (session?.email ?? '').split('@')[0] ?? ''
+  const words = local.split(/[._\-+]+/).filter(Boolean)
+  if (words.length === 0) return session?.email ? session.email : 'Student'
+  return words.map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')
+}
+
+function firstNameOf(session) {
+  return displayNameOf(session).split(/\s+/)[0] ?? 'there'
+}
+
+function initialsOf(name, email) {
+  const parts = (name ?? '').trim().split(/\s+/).filter(Boolean)
+  if (parts.length >= 2) return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase()
+  if (parts.length === 1 && parts[0][0]) return parts[0][0].toUpperCase()
+  const c = (email ?? '').trim().charAt(0)
+  return (c || 'S').toUpperCase()
+}
+
+const loginMessages = [
+  "Look who's here instead of doing their assignment on their own. 👀",
+  'We hope the time you save here gets reinvested in sleep. 😴',
+  'Back again? We respect the efficiency.',
+  "Your practical isn't going to write itself… actually, that's why we're here.",
+  "Welcome back. Let's get this practical out of the way.",
+]
+
+function pickGreeting() {
+  return loginMessages[Math.floor(Math.random() * loginMessages.length)]
+}
+
+function timeOfDay() {
+  const h = new Date().getHours()
+  if (h < 12) return 'Good morning'
+  if (h < 17) return 'Good afternoon'
+  return 'Good evening'
 }
 
 function priorityOf(difficulty) {
-  if (difficulty === 'Advanced') return { label: 'High', color: '#E56910', glyph: '▲' }
-  if (difficulty === 'Introductory') return { label: 'Low', color: '#1F8455', glyph: '▼' }
-  return { label: 'Medium', color: '#0C66E4', glyph: '＝' }
+  if (difficulty === 'Advanced') return { label: 'High', color: '#B3812F', glyph: '▲' }
+  if (difficulty === 'Introductory') return { label: 'Low', color: '#44645B', glyph: '▼' }
+  return { label: 'Medium', color: '#1A4543', glyph: '＝' }
 }
 
 /* ---------------------------------- icons --------------------------------- */
@@ -211,6 +267,27 @@ const PATHS = {
       <path d="M4 21h16" />
     </>
   ),
+  home: (
+    <>
+      <path d="m4 11 8-7 8 7" />
+      <path d="M6 9.5V20a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V9.5" />
+    </>
+  ),
+  archive: (
+    <>
+      <rect x="3" y="4" width="18" height="5" rx="1" />
+      <path d="M5 9v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V9" />
+      <path d="M10 13h4" />
+    </>
+  ),
+  chevron: <path d="m9 6 6 6-6 6" />,
+  logout: (
+    <>
+      <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+      <path d="m16 17 5-5-5-5" />
+      <path d="M21 12H9" />
+    </>
+  ),
   dot: <circle cx="12" cy="12" r="4" />,
 }
 
@@ -222,12 +299,12 @@ function Icon({ name, className = 'h-4 w-4' }) {
   )
 }
 
-function LogoMark({ className = 'h-7 w-7' }) {
+function LogoMark({ className = 'h-8 w-8' }) {
   return (
     <svg viewBox="0 0 32 32" className={className} aria-hidden="true">
-      <rect x="1" y="1" width="30" height="30" rx="7" fill="#0C66E4" />
-      <path d="M10 22.5 16 8l6 14.5h-3.4l-1.1-2.9h-5L11.4 22.5H10Zm4.2-5.4h2.9L16 14l-1.8 3.1Z" fill="#fff" />
-      <circle cx="22.6" cy="10.4" r="1.7" fill="#85B8FF" />
+      <rect x="1" y="1" width="30" height="30" rx="8" fill="#1A4543" />
+      <path d="M8 23.5v-12l7.5 7 7.5-7v12" fill="none" stroke="#fff" strokeWidth="3.2" strokeLinecap="round" strokeLinejoin="round" />
+      <circle cx="25" cy="8" r="2" fill="#F0BE6F" />
     </svg>
   )
 }
@@ -236,7 +313,7 @@ function Avatar({ subject, className = 'h-6 w-6 text-[10px]' }) {
   const s = subjectStyle(subject)
   const initials = subject.split(/[\s/]+/).map((w) => w[0]).join('').slice(0, 2).toUpperCase()
   return (
-    <span className={cx('inline-flex shrink-0 items-center justify-center rounded-full font-semibold', className)} style={{ background: s.bg, color: s.color }}>
+    <span className={cx('inline-flex shrink-0 items-center justify-center rounded-full font-bold', className)} style={{ background: s.bg, color: s.color }}>
       {initials}
     </span>
   )
@@ -245,36 +322,181 @@ function Avatar({ subject, className = 'h-6 w-6 text-[10px]' }) {
 function Spinner({ className = 'h-4 w-4' }) {
   return (
     <svg viewBox="0 0 24 24" className={cx('animate-spin', className)} aria-hidden="true">
-      <circle cx="12" cy="12" r="9" fill="none" stroke="#DFE1E6" strokeWidth="3" />
-      <path d="M21 12a9 9 0 0 0-9-9" fill="none" stroke="#0C66E4" strokeWidth="3" strokeLinecap="round" />
+      <circle cx="12" cy="12" r="9" fill="none" stroke="#E4DFD3" strokeWidth="3" />
+      <path d="M21 12a9 9 0 0 0-9-9" fill="none" stroke="#1A4543" strokeWidth="3" strokeLinecap="round" />
     </svg>
+  )
+}
+
+/* ------------------------- authenticated identity ------------------------ */
+
+function UserAvatar({ user, className = 'h-9 w-9 text-[12px]' }) {
+  // Remembers the URL that failed so a broken image falls back to initials;
+  // any new URL is retried automatically (no effect needed).
+  const [failedUrl, setFailedUrl] = useState('')
+  const name = displayNameOf(user)
+  const url = (user?.avatarUrl ?? '').trim()
+  if (url && url !== failedUrl) {
+    return (
+      <img
+        src={url}
+        alt={`${name}'s profile photo`}
+        onError={() => setFailedUrl(url)}
+        className={cx('shrink-0 rounded-full bg-pine-900 object-cover', className)}
+      />
+    )
+  }
+  return (
+    <span
+      role="img"
+      aria-label={`${name}'s profile avatar`}
+      className={cx('inline-flex shrink-0 items-center justify-center rounded-full bg-pine-900 font-bold text-white', className)}
+    >
+      {initialsOf(name, user?.email)}
+    </span>
+  )
+}
+
+function ProfileMenu({ session, onLogout, onOpenProfile, direction = 'up', compact = false }) {
+  const [open, setOpen] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const wrapRef = useRef(null)
+  const name = displayNameOf(session)
+
+  useEffect(() => {
+    if (!open) return undefined
+    function onKey(e) {
+      if (e.key === 'Escape') setOpen(false)
+    }
+    function onPointer(e) {
+      if (wrapRef.current && !wrapRef.current.contains(e.target)) setOpen(false)
+    }
+    document.addEventListener('keydown', onKey)
+    document.addEventListener('mousedown', onPointer)
+    return () => {
+      document.removeEventListener('keydown', onKey)
+      document.removeEventListener('mousedown', onPointer)
+    }
+  }, [open ])
+
+  async function doLogout() {
+    if (busy) return
+    setBusy(true)
+    try {
+      await onLogout()
+    } finally {
+      setBusy(false)
+      setOpen(false)
+    }
+  }
+
+  return (
+    <div ref={wrapRef} className="relative">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label={compact ? `${name} — open profile menu` : undefined}
+        title={compact ? name : undefined}
+        className={cx(
+          'flex items-center gap-2.5 rounded-xl text-left transition-all duration-150 hover:border-ink-300 hover:bg-rail active:bg-rail-hover cursor-pointer',
+          compact ? 'rounded-full p-0.5 hover:bg-rail' : 'w-full border border-transparent px-2 py-1.5 hover:border-line',
+        )}
+      >
+        <UserAvatar user={session} className={compact ? 'h-9 w-9 text-[12px]' : 'h-10 w-10 text-[13px]'} />
+        {!compact && (
+          <span className="min-w-0 flex-1">
+            <span className="block truncate text-[13px] font-bold leading-tight text-ink-900">{name}</span>
+            <span className="block truncate text-[11.5px] text-ink-400">{session?.email}</span>
+          </span>
+        )}
+        {!compact && (
+          <Icon name="chevron" className={cx('h-3.5 w-3.5 shrink-0 rotate-[-90deg] text-ink-300 transition-transform duration-150', open && 'rotate-90')} />
+        )}
+      </button>
+
+      {open && (
+        <div
+          role="menu"
+          aria-label="Profile menu"
+          className={cx(
+            'mk-pop absolute z-50 w-60 overflow-hidden rounded-xl border border-line bg-white shadow-[0_12px_32px_rgba(15,46,45,0.22)]',
+            direction === 'up' ? 'bottom-full left-0 mb-2' : 'right-0 top-full mt-2',
+          )}
+        >
+          <div className="flex items-center gap-2.5 border-b border-line-soft bg-paper px-3.5 py-3">
+            <UserAvatar user={session} className="h-9 w-9 text-[12px]" />
+            <div className="min-w-0">
+              <p className="truncate text-[13.5px] font-bold text-ink-900">{name}</p>
+              <p className="truncate text-[12px] text-ink-400">{session?.email}</p>
+            </div>
+          </div>
+          <div className="p-1.5">
+            <button
+              role="menuitem"
+              onClick={() => { setOpen(false); onOpenProfile?.() }}
+              className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-[13px] font-semibold text-ink-700 transition-colors duration-150 hover:bg-rail"
+            >
+              <Icon name="user" className="h-4 w-4 text-ink-400" />
+              Profile
+            </button>
+            <button
+              role="menuitem"
+              onClick={doLogout}
+              disabled={busy}
+              aria-label="Log out"
+              className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-[13px] font-semibold text-[#8F1D17] transition-colors duration-150 hover:bg-[#FDECEC] disabled:opacity-60"
+            >
+              {busy ? <Spinner className="h-4 w-4" /> : <Icon name="logout" className="h-4 w-4" />}
+              {busy ? 'Logging out…' : 'Log out'}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function ProfileModal({ session, onClose }) {
+  const name = displayNameOf(session)
+  return (
+    <ModalShell title="Your profile" subtitle="Identity from your Markly sign-in." onClose={onClose}>
+      <div className="flex items-center gap-3.5">
+        <UserAvatar user={session} className="h-16 w-16 text-[20px]" />
+        <div className="min-w-0">
+          <p className="truncate text-[17px] font-bold tracking-tight text-ink-900">{name}</p>
+          <p className="truncate text-[13px] text-ink-500">{session?.email}</p>
+          <span className="mt-1.5 inline-flex items-center gap-1.5 rounded-md bg-sage-100 px-2 py-0.5 text-[11px] font-bold text-sage-700 ring-1 ring-inset ring-sage-300/60">
+            <span className="h-1.5 w-1.5 rounded-full bg-sage-500" />
+            Signed in
+          </span>
+        </div>
+      </div>
+      <dl className="mt-4 grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+        <div className="rounded-lg bg-paper px-3 py-2.5 ring-1 ring-inset ring-line-soft">
+          <dt className="text-[11px] font-bold uppercase tracking-[0.06em] text-ink-300">Name</dt>
+          <dd className="mt-0.5 truncate text-[13.5px] font-semibold text-ink-900">{name}</dd>
+        </div>
+        <div className="rounded-lg bg-paper px-3 py-2.5 ring-1 ring-inset ring-line-soft">
+          <dt className="text-[11px] font-bold uppercase tracking-[0.06em] text-ink-300">Email</dt>
+          <dd className="mt-0.5 truncate text-[13.5px] font-semibold text-ink-900">{session?.email ?? '—'}</dd>
+        </div>
+        <div className="rounded-lg bg-paper px-3 py-2.5 ring-1 ring-inset ring-line-soft sm:col-span-2">
+          <dt className="text-[11px] font-bold uppercase tracking-[0.06em] text-ink-300">User ID</dt>
+          <dd className="mt-0.5 truncate text-[12.5px] font-semibold text-ink-700">{session?.id || '—'}</dd>
+        </div>
+      </dl>
+    </ModalShell>
   )
 }
 
 /* ------------------------------ shared bits -------------------------------- */
 
-function StatusPill({ status }) {
-  const map = {
-    todo: 'bg-slate-100 text-slate-600 ring-slate-200',
-    inprogress: 'bg-blue-50 text-[#0055CC] ring-blue-200',
-    done: 'bg-emerald-50 text-emerald-700 ring-emerald-200',
-    failed: 'bg-red-50 text-red-700 ring-red-200',
-  }
-  const label = { todo: 'To Do', inprogress: 'Generating', done: 'Done', failed: 'Failed' }[status] ?? 'To Do'
-  const dot = { todo: 'bg-slate-400', inprogress: 'bg-[#0C66E4]', done: 'bg-emerald-500', failed: 'bg-red-500' }[status]
-  return (
-    <span className={cx('inline-flex items-center gap-1.5 rounded px-1.5 py-0.5 text-[11px] font-semibold uppercase tracking-wide ring-1 ring-inset', map[status] ?? map.todo)}>
-      <span className={cx('h-1.5 w-1.5 rounded-full', dot)} />
-      {label}
-    </span>
-  )
-}
-
 function SubjectTag({ subject }) {
   const s = subjectStyle(subject)
   return (
-    <span className="inline-flex max-w-full items-center gap-1.5 rounded px-1.5 py-0.5 text-[11px] font-semibold" style={{ background: s.bg, color: s.color }}>
-      <span className="inline-block h-2 w-2 rounded-[3px]" style={{ background: s.color }} />
+    <span className="inline-flex max-w-full shrink-0 items-center gap-1.5 rounded-md px-1.5 py-0.5 text-[11px] font-bold" style={{ background: s.bg, color: s.color }}>
+      <span className="inline-block h-1.5 w-1.5 rounded-full" style={{ background: s.color }} />
       <span className="truncate">{subject}</span>
     </span>
   )
@@ -282,8 +504,8 @@ function SubjectTag({ subject }) {
 
 function SectionHeading({ icon, children }) {
   return (
-    <h3 className="flex items-center gap-2 text-[12px] font-semibold uppercase tracking-wide text-[#626F86]">
-      <Icon name={icon} className="h-4 w-4" />
+    <h3 className="flex items-center gap-2 text-[11.5px] font-bold uppercase tracking-[0.06em] text-ink-400">
+      <Icon name={icon} className="h-3.5 w-3.5" />
       {children}
     </h3>
   )
@@ -301,20 +523,28 @@ function CodeBlock({ code, language }) {
     }
   }
   return (
-    <div className="overflow-hidden rounded-md border border-[#DFE1E6] bg-[#F7F8FA]">
-      <div className="flex items-center justify-between border-b border-[#DFE1E6] bg-[#F1F2F4] px-3 py-1.5">
-        <span className="font-mono text-[11px] font-semibold uppercase tracking-wide text-[#626F86]">{(language || 'code').toLowerCase()}</span>
-        <button onClick={copy} className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium text-[#44546F] hover:bg-[#E9EBEE]">
+    <div className="overflow-hidden rounded-lg border border-line bg-paper">
+      <div className="flex items-center justify-between border-b border-line-soft bg-rail px-3 py-1.5">
+        <span className="text-[11px] font-bold uppercase tracking-wide text-ink-400">{(language || 'code').toLowerCase()}</span>
+        <button onClick={copy} className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] font-semibold text-ink-500 transition-colors duration-150 hover:bg-line-soft">
           <Icon name="copy" className="h-3.5 w-3.5" />
           {copied ? 'Copied' : 'Copy'}
         </button>
       </div>
-      <pre className="overflow-x-auto p-3 font-mono text-[12px] leading-relaxed text-[#172B4D]">{code}</pre>
+      <pre className="overflow-x-auto p-3 font-mono text-[12px] leading-relaxed text-ink-900">{code}</pre>
     </div>
   )
 }
 
-/* --------------------------------- issue card ------------------------------ */
+/* --------------------------- assignment row/card -------------------------- */
+
+function uiStatus(issue) {
+  if (issue.stale) return 'stale'
+  if (issue.status === 'inprogress') return 'generating'
+  if (issue.status === 'failed') return 'failed'
+  if (issue.status === 'done') return 'done'
+  return 'todo'
+}
 
 function RetryLink({ onRetry, label, className }) {
   return (
@@ -331,90 +561,138 @@ function RetryLink({ onRetry, label, className }) {
           onRetry()
         }
       }}
-      className={cx('cursor-pointer font-semibold underline underline-offset-2', className)}
+      className={cx('cursor-pointer font-bold underline underline-offset-2', className)}
     >
       {label}
     </span>
   )
 }
 
-function IssueCard({ issue, selected, onSelect, onRetry }) {
+function AssignmentRow({ issue, onOpen, onRetry }) {
   const content = issue.record?.content
-  const prio = priorityOf(issue.difficulty)
+  const title = content?.title ?? issue.aim
+  const status = uiStatus(issue)
+  const generating = issue.status === 'inprogress'
   return (
     <button
-      onClick={() => onSelect(issue.key)}
-      className={cx(
-        'w-full rounded-lg border bg-white p-3 text-left shadow-[0_1px_2px_rgba(9,30,66,0.08)] transition hover:border-[#85B8FF] hover:shadow-[0_3px_8px_rgba(9,30,66,0.12)]',
-        selected ? 'border-[#0C66E4] ring-1 ring-[#0C66E4]' : 'border-[#DFE1E6]',
-      )}
+      onClick={() => onOpen(issue.key)}
+      className="group w-full rounded-xl border border-line bg-white p-3.5 text-left shadow-[0_1px_2px_rgba(30,42,40,0.06)] transition-all duration-150 hover:border-sage-300 hover:shadow-[0_2px_8px_rgba(26,69,67,0.10)] sm:px-4"
     >
-      <div className="flex items-center justify-between gap-2">
-        <span className="font-mono text-[11px] font-semibold text-[#626F86]">{issue.key}</span>
-        <span className="text-[13px] font-bold leading-none" style={{ color: prio.color }} title={`${prio.label} priority`}>
-          {prio.glyph}
+      <div className="flex items-start gap-3">
+        <span className="mt-0.5 hidden shrink-0 rounded-lg bg-pine-50 px-2 py-1 text-[11px] font-bold tracking-wide text-pine-900 ring-1 ring-inset ring-pine-900/10 sm:inline-block">
+          {issue.experimentNumber ? `EXP ${issue.experimentNumber}` : 'EXP —'}
         </span>
-      </div>
-      <p className="mt-1.5 line-clamp-2 text-[13px] font-medium leading-snug text-[#172B4D]">{content?.title ?? issue.aim}</p>
-      {!content && <p className="mt-0.5 line-clamp-2 text-[12px] text-[#626F86]">{issue.aim}</p>}
-
-      {issue.status === 'inprogress' && (
-        <div className="mt-2.5 flex items-center gap-2 rounded-md bg-[#E9F2FF] px-2 py-1.5 text-[12px] font-medium text-[#0055CC]">
-          <Spinner className="h-3.5 w-3.5" />
-          Generating assignment…
-        </div>
-      )}
-      {issue.status === 'failed' && (
-        <div className="mt-2.5 rounded-md bg-red-50 px-2 py-1.5 text-[12px] text-red-700">
-          <span className="font-semibold">Generation failed. </span>
-          <RetryLink onRetry={() => onRetry(issue.key)} label="Retry" className="text-red-700 hover:text-red-900" />
-        </div>
-      )}
-      {issue.stale && issue.status === 'done' && (
-        <div className="mt-2.5 rounded-md bg-amber-50 px-2 py-1.5 text-[12px] text-amber-800">
-          <span className="font-semibold">Document cleared. </span>
-          <RetryLink onRetry={() => onRetry(issue.key)} label="Regenerate" className="text-amber-800 hover:text-amber-950" />
-        </div>
-      )}
-
-      <div className="mt-2.5 flex items-center justify-between gap-2">
-        <span className="flex min-w-0 items-center gap-1.5">
-          <SubjectTag subject={issue.subject} />
-          {issue.experimentNumber && (
-            <span className="rounded bg-[#F1F2F4] px-1.5 py-0.5 font-mono text-[10px] font-semibold text-[#44546F]">EXP-{issue.experimentNumber}</span>
-          )}
-        </span>
-        <span className="flex items-center gap-1.5">
-          {content?.steps?.length > 0 && (
-            <span className="inline-flex items-center gap-1 text-[11px] text-[#626F86]">
-              <Icon name="list" className="h-3.5 w-3.5" />
-              {content.steps.length}
+        <span className="min-w-0 flex-1">
+          <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
+            <span className="min-w-0 truncate text-[13.5px] font-bold tracking-tight text-ink-900">
+                {title}
+              </span>
+          </span>
+          <span className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] text-ink-400">
+            <span className="sm:hidden text-[11px] font-bold tracking-wide text-pine-900">
+              {issue.experimentNumber ? `EXP ${issue.experimentNumber} · ` : ''}
+            </span>
+            <SubjectTag subject={issue.subject} />
+            {issue.technology && <span className="truncate">· {issue.technology}</span>}
+            <span>· Updated {timeAgo(issue.updatedAt ?? issue.createdAt)}</span>
+            {content?.steps?.length > 0 && (
+              <span className="inline-flex items-center gap-1">
+                · <Icon name="list" className="h-3 w-3" /> {content.steps.length} steps
+              </span>
+            )}
+          </span>
+          {generating && (
+            <span className="mt-2 flex items-center gap-2 rounded-lg bg-pine-50 px-2.5 py-1.5 text-[12.5px] font-semibold text-pine-900">
+              <Spinner className="h-3.5 w-3.5" />
+              Generating assignment…
             </span>
           )}
-          <Avatar subject={issue.subject} className="h-5 w-5 text-[9px]" />
+          {issue.status === 'failed' && (
+            <span className="mt-2 block rounded-lg bg-[#FDECEC] px-2.5 py-1.5 text-[12.5px] text-[#8F1D17]">
+              <span className="font-bold">Generation failed. </span>
+              <RetryLink onRetry={() => onRetry(issue.key)} label="Retry" className="hover:text-[#5f130e]" />
+            </span>
+          )}
+          {issue.stale && issue.status === 'done' && (
+            <span className="mt-2 block rounded-lg bg-sand-50 px-2.5 py-1.5 text-[12.5px] text-sand-700 ring-1 ring-inset ring-sand-400/40">
+              <span className="font-bold">Stored copy expired. </span>
+              <RetryLink onRetry={() => onRetry(issue.key)} label="Regenerate" />
+            </span>
+          )}
+        </span>
+        <span className="flex shrink-0 flex-col items-end gap-2">
+          <StatusBadge status={status} />
+          <span className="hidden items-center gap-1 text-[12px] font-semibold text-ink-300 transition-colors duration-150 group-hover:text-pine-800 sm:inline-flex">
+            Open <Icon name="chevron" className="h-3.5 w-3.5" />
+          </span>
         </span>
       </div>
     </button>
   )
 }
 
+/* ------------------------- generation status pill ------------------------ */
+// Compact interactive status: the dominant element is the active count;
+// "please wait" stays de-emphasized supporting context. Clicking opens the
+// generating assignment in the right-side drawer (same slide animation).
+
+function GenerationPill({ count, onOpen, className = '' }) {
+  return (
+    <button
+      onClick={onOpen}
+      title="Open the generating assignment"
+      aria-label={`${count} assignment${count === 1 ? '' : 's'} generating — open details`}
+      className={cx(
+        'inline-flex min-h-[36px] items-center gap-1.5 rounded-full bg-pine-50 py-1.5 pl-3 pr-3.5 text-[12.5px] font-bold leading-5 text-pine-900 ring-1 ring-inset ring-pine-900/10 transition-colors duration-150 hover:bg-pine-100',
+        className,
+      )}
+    >
+      <span className="relative flex h-2 w-2 shrink-0">
+        <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-pine-700 opacity-40" />
+        <span className="relative inline-flex h-2 w-2 rounded-full bg-pine-800" />
+      </span>
+      {count} generating
+      <span className="font-medium text-pine-900/50">· please wait</span>
+    </button>
+  )
+}
+
 /* ---------------------------------- app ------------------------------------ */
+
+const NAV = [  { id: 'dashboard', label: 'Dashboard', icon: 'home' },
+  { id: 'assignments', label: 'Assignments', icon: 'file' },
+  { id: 'history', label: 'History', icon: 'archive' },
+  { id: 'templates', label: 'Templates', icon: 'grid' },
+]
 
 export default function App() {
   const [issues, setIssues] = useState([])
+  const [bootLoading, setBootLoading] = useState(true)
+  const [bootError, setBootError] = useState('')
   const [seq, setSeq] = useState(101)
-  const [selectedKey, setSelectedKey] = useState(null)
+  const [view, setView] = useState('dashboard')
+  // Drawer mount/animation state: the panel must stay mounted while the
+  // closing slide plays, so the key only clears AFTER the 240ms ease-in
+  // transition finishes (mirrors .mk-drawer.mk-hide in index.css).
+  const [drawerKey, setDrawerKey] = useState(null)
+  const [drawerShown, setDrawerShown] = useState(false)
+  const drawerTimer = useRef(null)
   const [createOpen, setCreateOpen] = useState(false)
-  // Empty hero offers a way back to the board (dashboard) even with zero cards.
-  const [showBoard, setShowBoard] = useState(false)
   const [prefill, setPrefill] = useState(null)
   const [toasts, setToasts] = useState([])
   const [serviceUp, setServiceUp] = useState(null)
   const [templates, setTemplates] = useState([])
-  const [templatesOpen, setTemplatesOpen] = useState(false)
-  const [historyOpen, setHistoryOpen] = useState(false)
   const [loginOpen, setLoginOpen] = useState(false)
+  const [profileOpen, setProfileOpen] = useState(false)
   const [session, setSession] = useState(null)
+  // Selected once per visit (and re-picked on each fresh login) — never
+  // re-rolled on re-render, so the line stays stable for the whole session.
+  const [greeting, setGreeting] = useState(() => pickGreeting())
+  // Assignments workspace state
+  const [query, setQuery] = useState('')
+  const [subjectFilter, setSubjectFilter] = useState('All subjects')
+  const [statusFilter, setStatusFilter] = useState('All statuses')
+  const [sortBy, setSortBy] = useState('Recently updated')
   const toastId = useRef(0)
 
   function saveSession(next) {
@@ -428,8 +706,6 @@ export default function App() {
     setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 4500)
   }, [])
 
-  // Logged-out actions must invite login instead of failing with a 401:
-  // the API enforces tokens when AUTH_REQUIRED=1.
   const handleAuthRequired = useCallback(() => {
     setLoginOpen(true)
     pushToast('error', 'Login required', 'Please log in to continue — then retry the action.')
@@ -441,33 +717,106 @@ export default function App() {
     return false
   }, [handleAuthRequired, session])
 
-  useEffect(() => {
-    apiFetch(`${API_BASE}/api/v1/health`)
-      .then((r) => setServiceUp(r.ok))
-      .catch(() => setServiceUp(false))
-    apiFetch(`${API_BASE}/api/v1/templates`, { headers: authHeaders() })
-      .then((r) => r.json())
-      .then((d) => setTemplates(d.templates ?? []))
-      .catch(() => setTemplates([]))
-    // Board boots from the server (Mongo-backed history), never the browser.
-    apiFetch(`${API_BASE}/api/v1/assignments`, { headers: authHeaders() })
-      .then((r) => r.json())
-      .then((d) => setIssues((d.assignments ?? []).map(recordToIssue)))
-      .catch(() => { /* service banner covers unreachable servers */ })
-    // Restore a still-valid cookie session (nothing stored in the browser).
-    apiFetch(`${API_BASE}/api/v1/auth/me`)
-      .then((r) => (r.ok ? r.json() : null))
-      .then((d) => { if (d?.user?.email) setSession({ email: d.user.email }) })
-      .catch(() => { /* logged out is a valid state */ })
+  // Must match .mk-drawer.mk-hide transition-duration in index.css.
+  const DRAWER_CLOSE_MS = 240
+
+  // Open the right-side drawer with a right→left slide. When the drawer is
+  // already mounted (switching assignments), content swaps without replaying
+  // the entrance — only a cold open animates.
+  const openDrawer = useCallback((key) => {
+    if (!key) return
+    if (drawerTimer.current) {
+      clearTimeout(drawerTimer.current)
+      drawerTimer.current = null
+    }
+    const cold = drawerKey === null
+    setDrawerKey(key)
+    if (cold) {
+      // Cold open: mount off-screen first, then slide in on the next frames.
+      setDrawerShown(false)
+      requestAnimationFrame(() => requestAnimationFrame(() => setDrawerShown(true)))
+    } else {
+      setDrawerShown(true)
+    }
+  }, [drawerKey])
+
+  // Close the drawer with a left→right slide + backdrop fade. The selection
+  // (and unmount) only clears after the animation finishes — never instantly.
+  const closeDrawer = useCallback(() => {
+    setDrawerShown(false)
+    if (drawerTimer.current) clearTimeout(drawerTimer.current)
+    drawerTimer.current = setTimeout(() => {
+      drawerTimer.current = null
+      setDrawerKey(null)
+    }, DRAWER_CLOSE_MS)
   }, [])
 
-  // Payload is built from the issue object itself — never captured inside a
-  // setIssues updater (React only runs the first updater of an event
-  // synchronously; capturing later leaves payload null and no request is sent).
+  const openCreate = useCallback((ex) => {
+    setPrefill(ex ?? null)
+    setCreateOpen(true)
+  }, [])
+
+  const refreshTemplates = useCallback(async () => {
+    try {
+      const d = await apiFetch(`${API_BASE}/api/v1/templates`, { headers: authHeaders() }).then((r) => r.json())
+      setTemplates(d.templates ?? [])
+    } catch {
+      /* keep stale list */
+    }
+  }, [])
+
+  useEffect(() => {
+    let alive = true
+    setBootLoading(true)
+    setBootError('')
+    apiFetch(`${API_BASE}/api/v1/health`)
+      .then((r) => { if (alive) setServiceUp(r.ok) })
+      .catch(() => { if (alive) setServiceUp(false) })
+    apiFetch(`${API_BASE}/api/v1/templates`, { headers: authHeaders() })
+      .then((r) => r.json())
+      .then((d) => { if (alive) setTemplates(d.templates ?? []) })
+      .catch(() => { if (alive) setTemplates([]) })
+    apiFetch(`${API_BASE}/api/v1/assignments`, { headers: authHeaders() })
+      .then((r) => r.json())
+      .then((d) => {
+        if (!alive) return
+        setIssues((d.assignments ?? []).map(recordToIssue))
+        setBootLoading(false)
+      })
+      .catch((err) => {
+        if (!alive) return
+        setBootError(err instanceof Error ? err.message : String(err))
+        setBootLoading(false)
+      })
+    apiFetch(`${API_BASE}/api/v1/auth/me`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        // Restored cookie session: identity comes from the authenticated
+        // profile (name/avatar resolved server-side), never local guesses.
+        if (alive && d?.user?.email) {
+          setSession({
+            email: d.user.email,
+            name: d.user.name ?? '',
+            avatarUrl: d.user.avatarUrl ?? '',
+            id: d.user.sub ?? d.user.id ?? '',
+          })
+        }
+      })
+      .catch(() => { /* logged out is a valid state */ })
+    return () => { alive = false }
+  }, [])
+
+  // Single logout path reused by every profile surface: the existing
+  // endpoint, existing session clearing, friendly confirmation.
+  const logout = useCallback(async () => {
+    try { await apiFetch(`${API_BASE}/api/v1/auth/logout`, { method: 'POST' }) } catch { /* cookie may already be gone */ }
+    saveSession(null)
+    pushToast('success', 'Logged out', 'Session cleared.')
+  }, [pushToast])
+
   const startGeneration = useCallback(
     async (issue) => {
       const key = issue.key
-      // Don't burn the card on a guaranteed 401: invite login first.
       if (!ensureSession()) return
       const payload = {
         aim: issue.aim,
@@ -487,19 +836,19 @@ export default function App() {
           method: 'POST',
           headers: authHeaders({ 'content-type': 'application/json' }),
           body: JSON.stringify(payload),
-          // Never spin forever: a stalled gateway fails here instead of hanging the card.
           signal: AbortSignal.timeout(180000),
         })
         status = res.status
         const data = await res.json().catch(() => ({}))
         if (!res.ok) throw new Error(data?.error ? String(data.error) : `Request failed. Please try again.`)
         if (!data?.content) throw new Error('Service returned an empty assignment')
-        // Rekey the card onto the server record id so reloads stay consistent.
         setIssues((prev) => prev.map((it) => (it.key === key ? { ...recordToIssue(data), key: data.id } : it)))
-        setSelectedKey(data.id)
+        // Rekeyed onto the server record id: follow with the open drawer so
+        // generation finishes in the same panel (no animation restart).
+        setDrawerKey(data.id)
+        setDrawerShown(true)
         pushToast('success', `${data.id} generated`, 'Assignment content is ready for review.')
       } catch (err) {
-        // Token may have expired mid-session: same login invitation, friendlier message.
         let message = err instanceof Error ? err.message : String(err)
         if (status === 401) {
           message = 'Please log in to continue — then retry generation.'
@@ -527,8 +876,6 @@ export default function App() {
 
   const issuesRef = useRef(issues)
 
-  // Records live in the service process; after a restart old ids 404. Detect on
-  // load so preview/export controls degrade gracefully instead of failing.
   useEffect(() => {
     const withRecord = issuesRef.current.filter((it) => it.record?.id)
     if (withRecord.length === 0) return undefined
@@ -539,7 +886,7 @@ export default function App() {
           const res = await apiFetch(`${API_BASE}/api/v1/assignments/${it.record.id}`, { signal: AbortSignal.timeout(10000) })
           return res.status === 404 ? it.key : null
         } catch {
-          return null // network trouble ≠ record gone
+          return null
         }
       }),
     ).then((keys) => {
@@ -565,29 +912,30 @@ export default function App() {
         experimentNumber: form.experimentNumber.trim(),
         technology: form.technology.trim(),
         difficulty: form.difficulty,
-          templateId: form.templateId || undefined,
-          includeVivaTitle: form.includeVivaTitle,
-          typedConclusion: form.typedConclusion,
+        templateId: form.templateId || undefined,
+        includeVivaTitle: form.includeVivaTitle,
+        typedConclusion: form.typedConclusion,
         status: 'inprogress',
         error: '',
         stale: false,
         record: null,
         createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
       }
       setIssues((prev) => [issue, ...prev])
       setCreateOpen(false)
       setPrefill(null)
-      setSelectedKey(key)
+      setView('assignments')
+      openDrawer(key)
       startGeneration(issue)
     },
-    [startGeneration, seq],
+    [startGeneration, seq, openDrawer],
   )
 
   const deleteIssue = useCallback(
     async (key) => {
       const target = issues.find((it) => it.key === key)
       const recordId = target?.record?.id
-      // Server-side delete (memory + Mongo); cards without records only exist locally.
       if (recordId) {
         try {
           const res = await apiFetch(`${API_BASE}/api/v1/assignments/${recordId}`, {
@@ -605,22 +953,12 @@ export default function App() {
         }
       }
       setIssues((prev) => prev.filter((it) => it.key !== key))
-      setSelectedKey(null)
+      closeDrawer()
       pushToast('success', `${key} deleted`, 'The assignment was removed.')
     },
-    [pushToast, issues],
+    [pushToast, issues, closeDrawer],
   )
 
-  const refreshTemplates = useCallback(async () => {
-    try {
-      const d = await apiFetch(`${API_BASE}/api/v1/templates`, { headers: authHeaders() }).then((r) => r.json())
-      setTemplates(d.templates ?? [])
-    } catch {
-      /* keep stale list */
-    }
-  }, [])
-
-  // Pull a server-side record onto the board as a finished card.
   const importRecordToBoard = useCallback(
     async (recordId) => {
       try {
@@ -628,15 +966,14 @@ export default function App() {
           if (!r.ok) throw new Error("Couldn't load this assignment. Please try again.")
           return r.json()
         })
-        // One card per server record: skip when already on the board.
         setIssues((prev) => (prev.some((it) => it.key === record.id) ? prev : [recordToIssue(record), ...prev]))
-        setHistoryOpen(false)
-        setSelectedKey(record.id)
+        openDrawer(record.id)
+        setView('assignments')
       } catch (err) {
         pushToast('error', 'Import failed', err instanceof Error ? err.message : String(err))
       }
     },
-    [pushToast, seq],
+    [pushToast, openDrawer],
   )
 
   async function downloadHtml(issue) {
@@ -672,130 +1009,274 @@ export default function App() {
     }
   }
 
-  const columns = useMemo(
-    () => ({
-      todo: issues.filter((i) => i.status === 'todo' || i.status === 'failed'),
-      inprogress: issues.filter((i) => i.status === 'inprogress'),
-      done: issues.filter((i) => i.status === 'done'),
-    }),
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    let list = issues.filter((it) => {
+      const title = (it.record?.content?.title ?? it.aim ?? '').toLowerCase()
+      const matchesQ =
+        !q ||
+        title.includes(q) ||
+        it.aim.toLowerCase().includes(q) ||
+        it.subject.toLowerCase().includes(q) ||
+        (it.technology ?? '').toLowerCase().includes(q) ||
+        it.key.toLowerCase().includes(q)
+      const matchesSubject = subjectFilter === 'All subjects' || it.subject === subjectFilter
+      const st = uiStatus(it)
+      const matchesStatus =
+        statusFilter === 'All statuses' ||
+        (statusFilter === 'Ready' && st === 'done') ||
+        (statusFilter === 'Generating' && st === 'generating') ||
+        (statusFilter === 'Needs attention' && st === 'failed') ||
+        (statusFilter === 'Expired' && st === 'stale')
+      return matchesQ && matchesSubject && matchesStatus
+    })
+    list = [...list].sort((a, b) => {
+      if (sortBy === 'Experiment number') {
+        return (Number.parseInt(a.experimentNumber || '0', 10) || 0) - (Number.parseInt(b.experimentNumber || '0', 10) || 0)
+      }
+      if (sortBy === 'Oldest first') {
+        return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+      }
+      const au = new Date(a.updatedAt ?? a.createdAt).getTime()
+      const bu = new Date(b.updatedAt ?? b.createdAt).getTime()
+      return bu - au
+    })
+    return list
+  }, [issues, query, subjectFilter, statusFilter, sortBy])
+
+  const recent = useMemo(() => [...issues].slice(0, 5), [issues])
+  // The drawer renders from drawerKey (not selection intent) so it survives
+  // the closing animation: the issue stays readable while sliding away.
+  const selected = drawerKey ? (issues.find((it) => it.key === drawerKey) ?? null) : null
+  const generatingCount = issues.filter((i) => i.status === 'inprogress').length
+  const firstGeneratingKey = useMemo(
+    () => issues.find((i) => i.status === 'inprogress')?.key ?? null,
     [issues],
   )
 
-  const selected = issues.find((it) => it.key === selectedKey) ?? null
+  const todayLine = useMemo(() => {
+    const d = new Date()
+    return d.toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' })
+  }, [])
 
   return (
-    <div className="flex h-full min-h-screen flex-col bg-white text-[#172B4D]">
-      {/* Top bar */}
-      <header className="no-print flex h-14 shrink-0 items-center gap-2 border-b border-[#DFE1E6] bg-white px-3 sm:px-4">
-        <span className="flex items-center gap-2">
-          <LogoMark className="h-7 w-7" />
-          <span className="text-[15px] font-semibold tracking-tight">Markly</span>
-        </span>
-        <span className="hidden rounded bg-[#E9F2FF] px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-[#0055CC] sm:inline">Workspace</span>
-        <div className="ml-auto flex items-center gap-1.5">
-          <button
-            onClick={() => setHistoryOpen(true)}
-            title="Server history"
-            className="inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-[13px] font-medium text-[#44546F] hover:bg-[#F1F2F4]"
-          >
-            <Icon name="clock" className="h-4 w-4" />
-            <span className="hidden sm:inline">History</span>
-          </button>
-          <button
-            onClick={() => setTemplatesOpen(true)}
-            title="Templates"
-            className="inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-[13px] font-medium text-[#44546F] hover:bg-[#F1F2F4]"
-          >
-            <Icon name="grid" className="h-4 w-4" />
-            <span className="hidden sm:inline">Templates</span>
-          </button>
-          <button
-            onClick={() => {
-              setPrefill(null)
-              setCreateOpen(true)
-            }}
-            className="inline-flex items-center gap-1.5 rounded-md bg-[#0C66E4] px-3 py-1.5 text-[13px] font-semibold text-white hover:bg-[#0055CC]"
-          >
+    <div className="flex min-h-screen bg-paper text-ink-900">
+      {/* Sidebar — desktop */}
+      <aside className="no-print sticky top-0 hidden h-screen w-60 shrink-0 flex-col border-r border-line bg-white lg:flex">
+        <div className="flex items-center gap-2.5 px-5 pb-4 pt-5">
+          <LogoMark className="h-8 w-8" />
+          <div>
+            <p className="text-[15px] font-extrabold leading-none tracking-tight">Markly</p>
+            <p className="mt-1 text-[11px] font-medium text-ink-400">Assignment workspace</p>
+          </div>
+        </div>
+        <div className="px-3">
+          <Button onClick={() => openCreate(null)} className="w-full">
             <Icon name="plus" className="h-4 w-4" />
-            Create
-          </button>
+            New assignment
+          </Button>
+        </div>
+        <nav className="mt-4 flex flex-col gap-0.5 px-3" aria-label="Primary">
+          {NAV.map((n) => {
+            const active = view === n.id
+            const count = n.id === 'assignments' ? issues.length : null
+            return (
+              <button
+                key={n.id}
+                onClick={() => setView(n.id)}
+                aria-current={active ? 'page' : undefined}
+                className={cx(
+                  'flex items-center gap-2.5 rounded-lg px-3 py-2 text-[13.5px] font-semibold transition-colors duration-150',
+                  active ? 'bg-pine-900 text-white shadow-[0_1px_2px_rgba(26,69,67,0.3)]' : 'text-ink-500 hover:bg-rail hover:text-ink-900',
+                )}
+              >
+                <Icon name={n.icon} className="h-4 w-4 shrink-0" />
+                {n.label}
+                {count !== null && count > 0 && (
+                  <span className={cx('ml-auto rounded-md px-1.5 py-0.5 text-[11px] font-bold', active ? 'bg-white/15 text-white' : 'bg-rail text-ink-500')}>
+                    {count}
+                  </span>
+                )}
+              </button>
+            )
+          })}
+        </nav>
+        <div className="mt-auto flex flex-col gap-3 border-t border-line-soft p-4">
+          <div className="flex items-center gap-2 rounded-lg bg-sage-50 px-3 py-2 ring-1 ring-inset ring-sage-300/40">
+            <span className={cx('h-2 w-2 rounded-full', serviceUp === false ? 'bg-[#B3261E]' : serviceUp ? 'bg-sage-500' : 'bg-ink-300 animate-pulse')} />
+            <p className="text-[12px] font-semibold text-ink-700">
+              {serviceUp === false ? 'Service unreachable' : serviceUp ? 'Service connected' : 'Checking service…'}
+            </p>
+          </div>
           {session ? (
-            <button
-              onClick={async () => {
-                try { await apiFetch(`${API_BASE}/api/v1/auth/logout`, { method: 'POST' }) } catch { /* cookie may already be gone */ }
-                saveSession(null)
-                pushToast('success', 'Logged out', 'Session cleared.')
-              }}
-              title={`Logged in as ${session.email} — click to log out`}
-              className="flex h-8 w-8 items-center justify-center rounded-full bg-[#6E5DC6] text-[12px] font-bold text-white"
-            >
-              {(session.email?.[0] ?? 'U').toUpperCase()}
-            </button>
-          ) : (
-            <button
-              onClick={() => setLoginOpen(true)}
-              title="Log in"
-              className="inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-[13px] font-medium text-[#44546F] hover:bg-[#F1F2F4]"
-            >
-              <Icon name="user" className="h-4 w-4" />
-              <span className="hidden sm:inline">Log in</span>
-            </button>
-          )}
-        </div>
-      </header>
-
-      {serviceUp === false && (
-        <div className="no-print border-b border-amber-200 bg-amber-50 px-4 py-2 text-[13px] text-amber-800">
-          Can't reach the Markly service. Check your connection and try again.
-        </div>
-      )}
-
-      {/* Content */}
-      <main className="flex min-h-0 flex-1 flex-col overflow-hidden">
-        <div className="flex items-baseline gap-3 px-4 pt-5 sm:px-6">
-          <h1 className="text-[20px] font-semibold tracking-tight">Assignments</h1>
-          <span className="text-[13px] text-[#626F86]">{issues.length} work items</span>
-        </div>
-
-        <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-6 pt-4 sm:px-6">
-          {issues.length === 0 && !showBoard ? (
-            <EmptyState
-              onCreate={(ex) => {
-                setPrefill(ex ?? null)
-                setCreateOpen(true)
-              }}
-              onShowBoard={() => setShowBoard(true)}
+            <ProfileMenu
+              session={session}
+              onLogout={logout}
+              onOpenProfile={() => setProfileOpen(true)}
+              direction="up"
             />
           ) : (
-            <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-              {COLUMNS.map((col) => (
-                <div key={col.id} className="flex min-h-[220px] flex-col rounded-xl bg-[#F1F2F4] p-2.5">
-                  <p className="px-1.5 pb-2 pt-1 text-[12px] font-semibold uppercase tracking-wide text-[#626F86]">
-                    {col.title}{' '}
-                    <span className="ml-1 rounded bg-[#E2E5EA] px-1.5 py-0.5 text-[11px]">{columns[col.id].length}</span>
-                  </p>
-                  <div className="flex flex-1 flex-col gap-2">
-                    {columns[col.id].map((issue) => (
-                      <IssueCard key={issue.key} issue={issue} selected={selectedKey === issue.key} onSelect={setSelectedKey} onRetry={runGeneration} />
-                    ))}
-                    {columns[col.id].length === 0 && (
-                      <div className="rounded-lg border border-dashed border-[#C1C7D0] bg-white/60 px-3 py-6 text-center text-[12px] text-[#8590A2]">
-                        No items here yet
-                      </div>
-                    )}
-                  </div>
-                </div>
-              ))}
-            </div>
+            <Button variant="secondary" size="sm" onClick={() => setLoginOpen(true)} className="w-full">
+              <Icon name="user" className="h-4 w-4" />
+              Log in
+            </Button>
           )}
         </div>
-      </main>
+      </aside>
+
+      {/* Main column */}
+      <div className="flex min-h-screen min-w-0 flex-1 flex-col">
+        {/* Top bar — mobile + tablet */}
+        <header className="no-print sticky top-0 z-30 border-b border-line bg-white/95 backdrop-blur lg:hidden">
+          <div className="flex items-center gap-2 px-3 py-2.5 sm:px-4">
+            <span className="flex items-center gap-2">
+              <LogoMark className="h-7 w-7" />
+              <span className="text-[15px] font-extrabold tracking-tight">Markly</span>
+            </span>
+            <div className="ml-auto flex items-center gap-1.5">
+              <Button size="sm" onClick={() => openCreate(null)}>
+                <Icon name="plus" className="h-3.5 w-3.5" />
+                New
+              </Button>
+              {session ? (
+                <ProfileMenu
+                  session={session}
+                  onLogout={logout}
+                  onOpenProfile={() => setProfileOpen(true)}
+                  direction="down"
+                  compact
+                />
+              ) : (
+                <button
+                  onClick={() => setLoginOpen(true)}
+                  aria-label="Log in"
+                  className="flex h-9 w-9 items-center justify-center rounded-full border border-line text-ink-500 transition-colors hover:bg-rail"
+                >
+                  <Icon name="user" className="h-4 w-4" />
+                </button>
+              )}
+            </div>
+          </div>
+          <nav className="flex gap-1 overflow-x-auto px-3 pb-2.5 sm:px-4" aria-label="Primary">
+            {NAV.map((n) => {
+              const active = view === n.id
+              return (
+                <button
+                  key={n.id}
+                  onClick={() => setView(n.id)}
+                  aria-current={active ? 'page' : undefined}
+                  className={cx(
+                    'inline-flex shrink-0 items-center gap-1.5 rounded-lg px-3 py-1.5 text-[13px] font-semibold transition-colors duration-150',
+                    active ? 'bg-pine-900 text-white' : 'text-ink-500 hover:bg-rail hover:text-ink-900',
+                  )}
+                >
+                  <Icon name={n.icon} className="h-3.5 w-3.5" />
+                  {n.label}
+                </button>
+              )
+            })}
+          </nav>
+          {/* Mobile status row: date first, tappable generation pill below —
+              never forced into one crowded line. */}
+          <div className="flex flex-col items-start gap-1.5 border-t border-line-soft px-3 py-2 sm:px-4">
+            <p className="text-[12px] font-medium text-ink-400">{todayLine}</p>
+            {generatingCount > 0 && firstGeneratingKey && (
+              <GenerationPill count={generatingCount} onOpen={() => openDrawer(firstGeneratingKey)} />
+            )}
+          </div>
+        </header>
+
+        {/* Desktop utility strip: date anchored left, generation status
+            absolutely centered (stable regardless of text width), workspace
+            count right. No margin hacks — pure relative + absolute layout. */}
+        <div className="no-print hidden border-b border-line bg-white lg:block">
+          <div className="relative mx-auto flex max-w-6xl items-center px-8 py-2">
+            <p className="text-[12.5px] font-medium text-ink-400">{todayLine}</p>
+            {generatingCount > 0 && firstGeneratingKey && (
+              <GenerationPill
+                count={generatingCount}
+                onOpen={() => openDrawer(firstGeneratingKey)}
+                className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2"
+              />
+            )}
+            <span className="ml-auto text-[12.5px] text-ink-400">
+              {issues.length === 0 ? 'No practicals yet' : `${issues.length} practical${issues.length === 1 ? '' : 's'} in workspace`}
+            </span>
+          </div>
+        </div>
+
+        {serviceUp === false && (
+          <div className="no-print border-b border-sand-400/50 bg-sand-50 px-4 py-2 text-center text-[13px] font-medium text-sand-700 sm:px-6">
+            Can&apos;t reach the Markly service. Check your connection and try again.
+          </div>
+        )}
+
+        {/* Content */}
+        <main className="mx-auto w-full max-w-6xl flex-1 px-3 pb-16 pt-5 sm:px-5 sm:pt-7 lg:px-8">
+          {view === 'dashboard' && (
+            <DashboardView
+              issues={issues}
+              recent={recent}
+              templates={templates}
+              loading={bootLoading}
+              error={bootError}
+              onRetry={() => window.location.reload()}
+              onCreate={openCreate}
+              onOpen={openDrawer}
+              onRetryGen={runGeneration}
+              onViewAll={() => setView('assignments')}
+              onViewTemplates={() => setView('templates')}
+              onUseTemplate={(t) => { setPrefill({ templateId: t.id }); setCreateOpen(true) }}
+              session={session}
+              greeting={greeting}
+            />
+          )}
+
+          {view === 'assignments' && (
+            <AssignmentsView
+              issues={filtered}
+              total={issues.length}
+              loading={bootLoading}
+              error={bootError}
+              query={query}
+              onQuery={setQuery}
+              subjectFilter={subjectFilter}
+              onSubject={setSubjectFilter}
+              statusFilter={statusFilter}
+              onStatus={setStatusFilter}
+              sortBy={sortBy}
+              onSort={setSortBy}
+              onCreate={() => openCreate(null)}
+              onOpen={openDrawer}
+              onRetry={runGeneration}
+              onResetFilters={() => { setQuery(''); setSubjectFilter('All subjects'); setStatusFilter('All statuses') }}
+            />
+          )}
+
+          {view === 'history' && (
+            <HistoryView
+              onImport={importRecordToBoard}
+            />
+          )}
+
+          {view === 'templates' && (
+            <TemplatesView
+              templates={templates}
+              onRefresh={refreshTemplates}
+              notify={pushToast}
+              onUse={(t) => { setPrefill({ templateId: t.id }); setCreateOpen(true) }}
+              onAuthRequired={handleAuthRequired}
+            />
+          )}
+        </main>
+      </div>
 
       {selected && (
         <DetailDrawer
           key={selected.key}
           issue={selected}
-          onClose={() => setSelectedKey(null)}
+          shown={drawerShown}
+          onClose={closeDrawer}
           onRetry={() => runGeneration(selected.key)}
           onDelete={() => deleteIssue(selected.key)}
           onDownload={() => downloadHtml(selected)}
@@ -819,43 +1300,50 @@ export default function App() {
         />
       )}
 
-      {templatesOpen && (
-        <TemplatesModal
-          templates={templates}
-          onRefresh={refreshTemplates}
-          notify={pushToast}
-          onClose={() => setTemplatesOpen(false)}
-        />
-      )}
-
-      {historyOpen && (
-        <HistoryModal onImport={importRecordToBoard} onClose={() => setHistoryOpen(false)} />
-      )}
-
       {loginOpen && (
         <LoginModal
           onClose={() => setLoginOpen(false)}
-          onLogin={(s) => {
-            saveSession(s)
+          onLogin={async (s) => {
+            // Token first (memory), then the authenticated profile for the
+            // real name/avatar — the form identity is only a fallback.
+            saveSession({ email: s.email, name: s.name ?? '', avatarUrl: '', id: '' })
             setLoginOpen(false)
+            try {
+              const me = await apiFetch(`${API_BASE}/api/v1/auth/me`, {
+                headers: authHeaders(),
+              }).then((r) => (r.ok ? r.json() : null))
+              if (me?.user) {
+                saveSession({
+                  email: me.user.email ?? s.email,
+                  name: me.user.name ?? s.name ?? '',
+                  avatarUrl: me.user.avatarUrl ?? '',
+                  id: me.user.sub ?? me.user.id ?? '',
+                })
+              }
+            } catch { /* form-provided identity stands */ }
+            setGreeting(pickGreeting())
             refreshTemplates()
-            pushToast('success', 'Logged in', s.email)
+            pushToast('success', `Welcome back, ${firstNameOf({ email: s.email, name: s.name ?? '' })}`, s.email)
           }}
         />
       )}
 
+      {profileOpen && session && (
+        <ProfileModal session={session} onClose={() => setProfileOpen(false)} />
+      )}
+
       {/* Toasts */}
-      <div className="pointer-events-none fixed bottom-4 right-4 z-[60] flex w-80 flex-col gap-2">
+      <div className="pointer-events-none fixed bottom-4 right-3 z-[60] flex w-[calc(100vw-24px)] max-w-sm flex-col gap-2 sm:right-4">
         {toasts.map((t) => (
-          <div key={t.id} className="pointer-events-auto flex items-start gap-2.5 rounded-lg border border-[#DFE1E6] bg-white p-3 shadow-[0_8px_24px_rgba(9,30,66,0.16)]">
-            <span className={cx('mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full', t.kind === 'success' ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700')}>
+          <div key={t.id} className="mk-toast pointer-events-auto flex items-start gap-2.5 rounded-xl border border-line bg-white p-3 shadow-[0_8px_24px_rgba(15,46,45,0.18)]">
+            <span className={cx('mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full', t.kind === 'success' ? 'bg-sage-100 text-pine-900' : 'bg-[#FDECEC] text-[#8F1D17]')}>
               <Icon name={t.kind === 'success' ? 'check' : 'x'} className="h-3.5 w-3.5" />
             </span>
-            <div className="min-w-0">
-              <p className="text-[13px] font-semibold">{t.title}</p>
-              <p className="break-words text-[12px] text-[#626F86]">{t.message}</p>
+            <div className="min-w-0 flex-1">
+              <p className="text-[13px] font-bold">{t.title}</p>
+              <p className="break-words text-[12.5px] text-ink-500">{t.message}</p>
             </div>
-            <button onClick={() => setToasts((x) => x.filter((y) => y.id !== t.id))} className="ml-auto rounded p-1 text-[#8590A2] hover:bg-[#F1F2F4]">
+            <button onClick={() => setToasts((x) => x.filter((y) => y.id !== t.id))} aria-label="Dismiss" className="rounded-md p-1 text-ink-300 transition-colors hover:bg-rail hover:text-ink-700">
               <Icon name="x" className="h-3.5 w-3.5" />
             </button>
           </div>
@@ -865,46 +1353,489 @@ export default function App() {
   )
 }
 
-/* -------------------------------- empty state ------------------------------ */
+/* -------------------------------- dashboard ------------------------------ */
 
-function EmptyState({ onCreate, onShowBoard }) {
+function DashboardView({ issues, recent, templates, loading, error, onRetry, onCreate, onOpen, onRetryGen, onViewAll, onViewTemplates, onUseTemplate, session, greeting }) {
   return (
-    <div className="mx-auto flex max-w-xl flex-col items-center rounded-xl border border-[#DFE1E6] bg-white px-8 py-12 text-center shadow-[0_1px_2px_rgba(9,30,66,0.08)]">
-      <span className="flex h-12 w-12 items-center justify-center rounded-xl bg-[#E9F2FF] text-[#0C66E4]">
-        <LogoMark className="h-8 w-8" />
-      </span>
-      <h2 className="mt-4 text-[17px] font-semibold">Create your first assignment</h2>
-      <p className="mt-1.5 max-w-md text-[13px] leading-relaxed text-[#626F86]">
-        Provide an aim, subject and experiment number. Markly drafts the objectives, theory, steps and
-        conclusion, then renders a print-ready department document.
-      </p>
-      <button onClick={() => onCreate(null)} className="mt-5 inline-flex items-center gap-1.5 rounded-md bg-[#0C66E4] px-4 py-2 text-[13px] font-semibold text-white hover:bg-[#0055CC]">
-        <Icon name="plus" className="h-4 w-4" />
-        Create assignment
-      </button>
-      <button type="button" onClick={onShowBoard} className="mt-3 text-[13px] font-medium text-[#0C66E4] hover:underline">
-        Go to dashboard →
-      </button>
-      <div className="mt-6 w-full border-t border-[#EBECF0] pt-4 text-left">
-        <p className="text-[11px] font-semibold uppercase tracking-wide text-[#626F86]">Or start from an example</p>
-        <div className="mt-2 flex flex-col gap-1.5">
-          {EXAMPLES.map((ex) => (
-            <button key={ex.aim} onClick={() => onCreate(ex)} className="rounded-md border border-[#DFE1E6] px-3 py-2 text-left text-[13px] hover:border-[#85B8FF] hover:bg-[#F7FAFF]">
-              <span className="font-medium">{ex.aim}</span>
-              <span className="block text-[12px] text-[#626F86]">
-                {ex.subject} · Experiment {ex.experimentNumber}
-              </span>
-            </button>
-          ))}
+    <div className="mk-rise flex flex-col gap-5">
+      {session ? (
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0">
+            <h1 className="text-[22px] font-bold tracking-tight text-ink-900 sm:text-[24px]">
+              {timeOfDay()}, {firstNameOf(session)}.
+            </h1>
+            <p className="mt-1 max-w-xl text-[13.5px] leading-relaxed text-ink-500">
+              {greeting}
+            </p>
+            <p className="mt-1.5 max-w-xl text-[13px] leading-relaxed text-ink-400">
+              Create and manage your practicals without the last-minute panic.
+            </p>
+          </div>
+          <Button onClick={() => onCreate(null)} className="shrink-0">
+            <Icon name="plus" className="h-4 w-4" />
+            Create assignment
+          </Button>
+        </div>
+      ) : (
+        <PageHeader
+          title="Your practical workspace"
+          description="Draft an aim, generate a structured department-ready document, then export it for submission. Everything you create appears below."
+          actions={
+            <Button onClick={() => onCreate(null)}>
+              <Icon name="plus" className="h-4 w-4" />
+              Create assignment
+            </Button>
+          }
+        />
+      )}
+
+      {loading ? (
+        <LoadingRows count={4} />
+      ) : error ? (
+        <ErrorState onRetry={onRetry} />
+      ) : issues.length === 0 ? (
+        <EmptyState
+          icon={<LogoMark className="h-6 w-6" />}
+          title="No assignments yet"
+          body="Create your first practical and it will appear here."
+          action={
+            <Button onClick={() => onCreate(null)} size="lg">
+              <Icon name="plus" className="h-4 w-4" />
+              Create your first practical
+            </Button>
+          }
+          secondary={
+            <div className="mt-6 w-full border-t border-line-soft pt-4 text-left">
+              <p className="text-[11px] font-bold uppercase tracking-[0.06em] text-ink-400">Or start from an example</p>
+              <div className="mt-2 flex flex-col gap-1.5">
+                {EXAMPLES.map((ex) => (
+                  <button key={ex.aim} onClick={() => onCreate(ex)} className="rounded-lg border border-line px-3 py-2 text-left text-[13px] transition-colors duration-150 hover:border-pine-700 hover:bg-pine-50">
+                    <span className="font-bold text-ink-900">{ex.aim}</span>
+                    <span className="block text-[12px] text-ink-500">
+                      {ex.subject} · Experiment {ex.experimentNumber}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          }
+        />
+      ) : (
+        <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
+          {/* Recent work */}
+          <section className="xl:col-span-2">
+            <div className="mb-2.5 flex items-center justify-between">
+              <h2 className="text-[13px] font-bold uppercase tracking-[0.06em] text-ink-400">Recent assignments</h2>
+              <button onClick={onViewAll} className="inline-flex items-center gap-1 text-[12.5px] font-bold text-pine-800 transition-colors hover:text-pine-950">
+                View all <Icon name="chevron" className="h-3.5 w-3.5" />
+              </button>
+            </div>
+            <div className="flex flex-col gap-2">
+              {recent.map((issue) => (
+                <AssignmentRow key={issue.key} issue={issue} onOpen={onOpen} onRetry={onRetryGen} />
+              ))}
+            </div>
+          </section>
+
+          {/* Side stack */}
+          <div className="flex flex-col gap-4">
+            <section className="rounded-xl border border-sage-300/50 bg-sage-50 p-4">
+              <h2 className="text-[13px] font-bold uppercase tracking-[0.06em] text-pine-900">How it works</h2>
+              <ol className="mt-2.5 flex flex-col gap-2.5">
+                {[
+                  ['Describe', 'Aim, subject, experiment number and technology.'],
+                  ['Generate', 'Objectives, theory, steps and conclusion — validated, never viva questions.'],
+                  ['Export', 'Department header and watermark on every page — DOCX, PDF, HTML.'],
+                ].map(([h, p], i) => (
+                  <li key={h} className="flex gap-2.5">
+                    <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-pine-900 text-[11px] font-bold text-white">
+                      {i + 1}
+                    </span>
+                    <span>
+                      <span className="block text-[13px] font-bold text-ink-900">{h}</span>
+                      <span className="block text-[12.5px] leading-relaxed text-ink-500">{p}</span>
+                    </span>
+                  </li>
+                ))}
+              </ol>
+              <Button variant="secondary" size="sm" onClick={() => onCreate(null)} className="mt-3.5 w-full bg-white">
+                <Icon name="plus" className="h-3.5 w-3.5" />
+                Start a new practical
+              </Button>
+            </section>
+
+            <section className="rounded-xl border border-line bg-white p-4">
+              <div className="flex items-center justify-between">
+                <h2 className="text-[13px] font-bold uppercase tracking-[0.06em] text-ink-400">Templates</h2>
+                <button onClick={onViewTemplates} className="inline-flex items-center gap-1 text-[12.5px] font-bold text-pine-800 hover:text-pine-950">
+                  Library <Icon name="chevron" className="h-3.5 w-3.5" />
+                </button>
+              </div>
+              {templates.length === 0 ? (
+                <p className="mt-2 text-[13px] text-ink-500">No templates yet — the default department format is used automatically.</p>
+              ) : (
+                <div className="mt-2.5 flex flex-col gap-1.5">
+                  {templates.slice(0, 3).map((t) => (
+                    <div key={`${t.id}@${t.version}`} className="flex items-center gap-2 rounded-lg border border-line-soft px-2.5 py-2">
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-[13px] font-bold">{t.name}</span>
+                        <span className="block text-[11px] font-semibold text-ink-400">v{t.version} · {t.status}</span>
+                      </span>
+                      <button onClick={() => onUseTemplate(t)} className="shrink-0 rounded-lg px-2 py-1 text-[12px] font-bold text-pine-800 transition-colors hover:bg-pine-50">
+                        Use
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </section>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+/* ------------------------------- assignments ----------------------------- */
+
+function AssignmentsView({ issues, total, loading, error, query, onQuery, subjectFilter, onSubject, statusFilter, onStatus, sortBy, onSort, onCreate, onOpen, onRetry, onResetFilters }) {
+  const hasFilters = query.trim() !== '' || subjectFilter !== 'All subjects' || statusFilter !== 'All statuses'
+  const selectCls =
+    'rounded-lg border border-line bg-white px-2.5 py-2 text-[13px] font-medium text-ink-700 transition-colors duration-150 hover:border-ink-300 focus:border-pine-800 focus:outline-none focus:ring-2 focus:ring-pine-900/15'
+  return (
+    <div className="mk-rise flex flex-col gap-4">
+      <PageHeader
+        title="Assignments"
+        description="Every practical, its status and exports — in one place. Select an assignment to review, edit and export it."
+        meta={
+          <Badge tone="teal">{total} practical{total === 1 ? '' : 's'}</Badge>
+        }
+        actions={
+          <Button onClick={onCreate}>
+            <Icon name="plus" className="h-4 w-4" />
+            Create assignment
+          </Button>
+        }
+      />
+
+      <div className="flex flex-col gap-2 rounded-xl border border-line bg-white p-3 sm:flex-row sm:items-center">
+        <SearchBar value={query} onChange={onQuery} placeholder="Search by aim, subject, technology or ID…" className="flex-1" />
+        <div className="grid grid-cols-3 gap-2 sm:flex sm:shrink-0">
+          <select value={subjectFilter} onChange={(e) => onSubject(e.target.value)} className={selectCls} aria-label="Filter by subject">
+            {['All subjects', ...SUBJECTS].map((s) => (
+              <option key={s}>{s}</option>
+            ))}
+          </select>
+          <select value={statusFilter} onChange={(e) => onStatus(e.target.value)} className={selectCls} aria-label="Filter by status">
+            {['All statuses', 'Ready', 'Generating', 'Needs attention', 'Expired'].map((s) => (
+              <option key={s}>{s}</option>
+            ))}
+          </select>
+          <select value={sortBy} onChange={(e) => onSort(e.target.value)} className={selectCls} aria-label="Sort assignments">
+            {['Recently updated', 'Oldest first', 'Experiment number'].map((s) => (
+              <option key={s}>{s}</option>
+            ))}
+          </select>
         </div>
       </div>
+
+      {loading ? (
+        <LoadingRows count={5} />
+      ) : error ? (
+        <ErrorState onRetry={() => window.location.reload()} />
+      ) : total === 0 ? (
+        <EmptyState
+          icon={<Icon name="file" className="h-5 w-5" />}
+          title="No assignments yet"
+          body="Create your first practical and it will appear here."
+          action={
+            <Button onClick={onCreate} size="lg">
+              <Icon name="plus" className="h-4 w-4" />
+              Create assignment
+            </Button>
+          }
+        />
+      ) : issues.length === 0 ? (
+        <div className="rounded-xl border border-dashed border-line bg-white px-6 py-10 text-center">
+          <p className="text-[14px] font-bold">No assignments match these filters</p>
+          <p className="mt-1 text-[13px] text-ink-500">Try a different search term or clear the filters.</p>
+          {hasFilters && (
+            <Button variant="secondary" size="sm" onClick={onResetFilters} className="mt-4">
+              Clear filters
+            </Button>
+          )}
+        </div>
+      ) : (
+        <>
+          <p className="text-[12.5px] text-ink-400">
+            Showing {issues.length} of {total}
+          </p>
+          <div className="flex flex-col gap-2">
+            {issues.map((issue) => (
+              <AssignmentRow key={issue.key} issue={issue} onOpen={onOpen} onRetry={onRetry} />
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
+/* --------------------------------- history ------------------------------- */
+
+function HistoryView({ onImport }) {
+  const [items, setItems] = useState(null)
+  const [error, setError] = useState('')
+  const [q, setQ] = useState('')
+  const [subject, setSubject] = useState('All subjects')
+
+  useEffect(() => {
+    let alive = true
+    apiFetch(`${API_BASE}/api/v1/assignments`, { headers: authHeaders(), signal: AbortSignal.timeout(30000) })
+      .then((r) => r.json())
+      .then((d) => { if (alive) setItems(d.assignments ?? []) })
+      .catch((err) => { if (alive) setError(err instanceof Error ? err.message : String(err)) })
+    return () => { alive = false }
+  }, [])
+
+  const filtered = useMemo(() => {
+    const needle = q.trim().toLowerCase()
+    return (items ?? []).filter((a) => {
+      const text = `${a.title ?? ''} ${a.aim ?? ''} ${a.id ?? ''}`.toLowerCase()
+      return (!needle || text.includes(needle)) && (subject === 'All subjects' || (a.input?.subject ?? a.subject) === subject)
+    })
+  }, [items, q, subject])
+
+  return (
+    <div className="mk-rise flex flex-col gap-4">
+      <PageHeader
+        title="History"
+        description="A clean academic archive of everything generated on the Markly service. Open any record to review it in the workspace."
+      />
+      <div className="flex flex-col gap-2 rounded-xl border border-line bg-white p-3 sm:flex-row sm:items-center">
+        <SearchBar value={q} onChange={setQ} placeholder="Search archive by title, aim or ID…" className="flex-1" />
+        <select
+          value={subject}
+          onChange={(e) => setSubject(e.target.value)}
+          aria-label="Filter archive by subject"
+          className="rounded-lg border border-line bg-white px-2.5 py-2 text-[13px] font-medium text-ink-700 focus:border-pine-800 focus:outline-none focus:ring-2 focus:ring-pine-900/15 sm:w-48"
+        >
+          {['All subjects', ...SUBJECTS].map((s) => (
+            <option key={s}>{s}</option>
+          ))}
+        </select>
+      </div>
+
+      {error && <ErrorState onRetry={() => window.location.reload()} />}
+      {!error && items === null && <LoadingRows count={5} />}
+      {!error && items !== null && items.length === 0 && (
+        <EmptyState
+          icon={<Icon name="archive" className="h-5 w-5" />}
+          title="Archive is empty"
+          body="Nothing has been stored on the service yet. Generated assignments will be archived here."
+        />
+      )}
+      {!error && items !== null && items.length > 0 && filtered.length === 0 && (
+        <div className="rounded-xl border border-dashed border-line bg-white px-6 py-10 text-center">
+          <p className="text-[14px] font-bold">No records match this search</p>
+          <p className="mt-1 text-[13px] text-ink-500">Try a different term or filter.</p>
+        </div>
+      )}
+      <div className="flex flex-col gap-2">
+        {filtered.map((a) => (
+          <div key={a.id} className="flex items-center gap-3 rounded-xl border border-line bg-white px-3.5 py-3 transition-colors duration-150 hover:border-sage-300 sm:px-4">
+            <Avatar subject={a.input?.subject ?? 'DBMS'} className="hidden h-9 w-9 text-[11px] sm:inline-flex" />
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-[13.5px] font-bold tracking-tight">{a.title || a.aim || a.id}</p>
+              <p className="mt-0.5 truncate text-[12px] text-ink-400">
+                <span className="text-[11.5px] font-semibold">{a.id}</span>
+                {' · '}{a.template?.id ?? 'default'} v{a.template?.version ?? 1}
+                {' · '}{a.createdAt ? fullDate(a.createdAt) : '—'}
+              </p>
+            </div>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={async () => {
+                await onImport(a.id)
+              }}
+              className="shrink-0"
+            >
+              Open
+            </Button>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+/* -------------------------------- templates ------------------------------ */
+
+function TemplatesView({ templates, onRefresh, notify, onUse, onAuthRequired }) {
+  const [q, setQ] = useState('')
+  const [status, setStatus] = useState('All')
+  const [name, setName] = useState('')
+  const [file, setFile] = useState(null)
+  const [msg, setMsg] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [manageOpen, setManageOpen] = useState(false)
+
+  const filtered = useMemo(() => {
+    const needle = q.trim().toLowerCase()
+    return (templates ?? []).filter(
+      (t) =>
+        (!needle || `${t.name} ${t.id}`.toLowerCase().includes(needle)) &&
+        (status === 'All' || t.status === status),
+    )
+  }, [templates, q, status])
+
+  async function create(e) {
+    e.preventDefault()
+    if (name.trim().length < 3) { setMsg('Name needs at least 3 characters.'); return }
+    setBusy(true)
+    setMsg('')
+    try {
+      const res = await apiFetch(`${API_BASE}/api/v1/templates`, {
+        method: 'POST',
+        headers: authHeaders({ 'content-type': 'application/json' }),
+        body: JSON.stringify({ name: name.trim() }),
+        signal: AbortSignal.timeout(30000),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (res.status === 401) { onAuthRequired?.(); return }
+      if (!res.ok) throw new Error(data?.error ?? "Couldn't create the template. Please try again.")
+      setName('')
+      onRefresh()
+      notify('success', 'Template created', `${data.template.name} v${data.template.version} (draft).`)
+    } catch (err) {
+      setMsg(err instanceof Error ? err.message : String(err))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function importPdf(e) {
+    e.preventDefault()
+    if (!file) { setMsg('Choose a sample PDF first.'); return }
+    setBusy(true)
+    setMsg('')
+    try {
+      const form = new FormData()
+      form.append('file', file)
+      if (name.trim()) form.append('name', name.trim())
+      const res = await apiFetch(`${API_BASE}/api/v1/templates/from-pdf`, {
+        method: 'POST',
+        headers: authHeaders(),
+        body: form,
+        signal: AbortSignal.timeout(120000),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (res.status === 401) { onAuthRequired?.(); return }
+      if (!res.ok) throw new Error(data?.error ?? 'Import failed. Please try again.')
+      setFile(null)
+      onRefresh()
+      notify('success', 'Template draft saved', `${data.template.name} — detected: ${(data.analysis?.detectedHeadings ?? []).join(', ') || 'no headings'}.`)
+    } catch (err) {
+      setMsg(err instanceof Error ? err.message : String(err))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="mk-rise flex flex-col gap-4">
+      <PageHeader
+        title="Templates"
+        description="Department formats for headers, watermarks and structure. Pick one when creating an assignment — or import a sample PDF to draft a new format."
+        meta={<Badge tone="sage">{templates.length} format{templates.length === 1 ? '' : 's'}</Badge>}
+        actions={
+          <Button variant="secondary" onClick={() => setManageOpen((v) => !v)}>
+            <Icon name="plus" className="h-4 w-4" />
+            {manageOpen ? 'Hide tools' : 'New / import'}
+          </Button>
+        }
+      />
+
+      {manageOpen && (
+        <div className="mk-rise grid grid-cols-1 gap-3 md:grid-cols-2">
+          <div className="rounded-xl border border-line bg-white p-4">
+            <h2 className="text-[13.5px] font-bold">New blank template</h2>
+            <p className="mt-0.5 text-[12.5px] text-ink-500">Starts as a v1 draft you can refine later.</p>
+            <form onSubmit={create} className="mt-3 flex gap-2">
+              <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Template name" className={inputCls} />
+              <Button type="submit" disabled={busy} className="shrink-0">
+                Create
+              </Button>
+            </form>
+          </div>
+          <div className="rounded-xl border border-line bg-white p-4">
+            <h2 className="text-[13.5px] font-bold">Import from sample PDF</h2>
+            <p className="mt-0.5 text-[12.5px] text-ink-500">Structure is extracted into a v1 draft for review.</p>
+            <form onSubmit={importPdf} className="mt-3 flex flex-col gap-2">
+              <input type="file" accept="application/pdf" onChange={(e) => setFile(e.target.files?.[0] ?? null)} className="text-[13px] text-ink-500" />
+              <Button type="submit" disabled={busy} className="w-fit">
+                <Icon name="upload" className="h-4 w-4" />
+                {busy ? 'Analyzing…' : 'Analyze & save draft'}
+              </Button>
+            </form>
+          </div>
+          {msg && <p className="rounded-lg bg-[#FDECEC] px-3 py-2 text-[13px] font-medium text-[#8F1D17] md:col-span-2">{msg}</p>}
+        </div>
+      )}
+
+      <div className="flex flex-col gap-2 rounded-xl border border-line bg-white p-3 sm:flex-row sm:items-center">
+        <SearchBar value={q} onChange={setQ} placeholder="Search templates by name or ID…" className="flex-1" />
+        <select
+          value={status}
+          onChange={(e) => setStatus(e.target.value)}
+          aria-label="Filter templates by status"
+          className="rounded-lg border border-line bg-white px-2.5 py-2 text-[13px] font-medium text-ink-700 focus:border-pine-800 focus:outline-none focus:ring-2 focus:ring-pine-900/15 sm:w-44"
+        >
+          {['All', 'draft', 'active', 'archived'].map((s) => (
+            <option key={s}>{s === 'All' ? 'All statuses' : s}</option>
+          ))}
+        </select>
+      </div>
+
+      {filtered.length === 0 ? (
+        <EmptyState
+          icon={<Icon name="grid" className="h-5 w-5" />}
+          title={templates.length === 0 ? 'No templates yet' : 'No templates match this search'}
+          body={templates.length === 0 ? 'The default department format is used automatically. Create or import a format to see it here.' : 'Try a different search term or filter.'}
+        />
+      ) : (
+        <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+          {filtered.map((t) => (
+            <div key={`${t.id}@${t.version}`} className="rounded-xl border border-line bg-white p-4 transition-colors duration-150 hover:border-sage-300">
+              <div className="flex items-start gap-2">
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-[14px] font-bold tracking-tight">{t.name}</p>
+                  <p className="mt-0.5 truncate text-[11.5px] font-medium text-ink-400">{t.id} · tenant {t.tenantId ?? '—'}</p>
+                </div>
+                <Badge tone={t.status === 'active' ? 'teal' : t.status === 'draft' ? 'sand' : 'neutral'}>
+                  v{t.version} · {t.status}
+                </Badge>
+              </div>
+              <div className="mt-3 flex gap-2">
+                <Button size="sm" onClick={() => onUse(t)}>
+                  Use template
+                </Button>
+                <Button size="sm" variant="ghost" onClick={onRefresh}>
+                  Refresh
+                </Button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
 
 /* ------------------------------- detail drawer ----------------------------- */
 
-function DetailDrawer({ issue, onClose, onRetry, onDelete, onDownload, onOpenPreview, onRecordUpdate, onMarkStale, onAuthRequired, apiBase }) {
+function DetailDrawer({ issue, shown, onClose, onRetry, onDelete, onDownload, onOpenPreview, onRecordUpdate, onMarkStale, onAuthRequired, apiBase }) {
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [showRawJson, setShowRawJson] = useState(false)
   const [exportBusy, setExportBusy] = useState('')
@@ -922,9 +1853,13 @@ function DetailDrawer({ issue, onClose, onRetry, onDelete, onDownload, onOpenPre
   const [optError, setOptError] = useState('')
   const [previewKey, setPreviewKey] = useState(0)
   const [recordGone, setRecordGone] = useState(false)
+  const closeRef = useRef(null)
 
-  // Records live in server memory: after an API restart old cards point at
-  // nothing. Detect it explicitly instead of showing a dead preview.
+  // Move focus into the drawer on mount so keyboard users land on Close.
+  useEffect(() => {
+    closeRef.current?.focus({ preventScroll: true })
+  }, [])
+
   useEffect(() => {
     const recordId = issue.record?.id
     if (!recordId) return
@@ -938,7 +1873,6 @@ function DetailDrawer({ issue, onClose, onRetry, onDelete, onDownload, onOpenPre
   const prio = priorityOf(issue.difficulty)
   const stale = issue.stale === true
 
-  // 404 means the service lost this record (restart) — flag it so the UI offers regeneration.
   function failMessage(res, data) {
     if (res.status === 404) {
       onMarkStale(issue.key)
@@ -947,7 +1881,6 @@ function DetailDrawer({ issue, onClose, onRetry, onDelete, onDownload, onOpenPre
     return data?.error ?? `Request failed. Please try again.`
   }
 
-  // 401 (missing/expired token) must invite login, not just stain the drawer with an error.
   function throwIfAuth(res) {
     if (res.status === 401) {
       onAuthRequired?.()
@@ -1102,7 +2035,6 @@ function DetailDrawer({ issue, onClose, onRetry, onDelete, onDownload, onOpenPre
     try {
       await navigator.clipboard.writeText(latex)
     } catch {
-      // Clipboard API unavailable (permissions) — legacy fallback.
       const ta = document.createElement('textarea')
       ta.value = latex
       document.body.appendChild(ta)
@@ -1116,76 +2048,89 @@ function DetailDrawer({ issue, onClose, onRetry, onDelete, onDownload, onOpenPre
 
   return (
     <>
-      <div className="fixed inset-0 z-40 bg-[#091E42]/40" onClick={onClose} />
-      <aside className="fixed inset-y-0 right-0 z-50 flex w-full max-w-[560px] flex-col bg-white shadow-[0_0_40px_rgba(9,30,66,0.25)]">
-        <div className="flex items-center gap-2 border-b border-[#DFE1E6] px-4 py-3">
-          <span className="font-mono text-[12px] text-[#626F86]">{issue.key}</span>
-          <StatusPill status={issue.status} />
-          <span className="ml-auto flex items-center gap-0.5">
-            <button title="Download document" onClick={onDownload} disabled={!issue.record || stale} className="rounded p-1.5 text-[#44546F] hover:bg-[#F1F2F4] disabled:opacity-40">
+      <div
+        className={cx('mk-backdrop fixed inset-0 z-40 bg-pine-950/30', shown && 'mk-show')}
+        onClick={onClose}
+        aria-hidden="true"
+      />
+      <aside
+        role="dialog"
+        aria-modal="true"
+        aria-label={content?.title ?? issue.aim}
+        className={cx(
+          'mk-drawer fixed inset-x-0 bottom-0 top-8 z-50 flex flex-col overflow-hidden rounded-t-2xl bg-paper shadow-[0_0_48px_rgba(15,46,45,0.35)]',
+          'sm:inset-y-0 sm:left-auto sm:right-0 sm:top-0 sm:rounded-l-2xl sm:rounded-tr-none sm:w-[440px] lg:w-[560px] 2xl:w-[620px]',
+          shown ? 'mk-show' : 'mk-hide',
+        )}
+      >
+        <div className="flex items-center gap-2 border-b border-line bg-white px-3.5 py-2.5 sm:px-4">
+          <span className="rounded-md bg-rail px-2 py-1 text-[11px] font-bold tracking-wide text-ink-500">{issue.key}</span>
+          <StatusBadge status={uiStatus(issue)} />
+          <span className="ml-auto flex items-center gap-1">
+            <button title="Download document" aria-label="Download document" onClick={onDownload} disabled={!issue.record || stale} className="inline-flex h-9 w-9 items-center justify-center rounded-lg text-ink-500 transition-colors duration-150 hover:bg-rail hover:text-ink-900 disabled:opacity-40">
               <Icon name="download" className="h-4 w-4" />
             </button>
-            <button title="Open document" onClick={onOpenPreview} disabled={!issue.record || stale} className="rounded p-1.5 text-[#44546F] hover:bg-[#F1F2F4] disabled:opacity-40">
+            <button title="Open document" aria-label="Open document" onClick={onOpenPreview} disabled={!issue.record || stale} className="inline-flex h-9 w-9 items-center justify-center rounded-lg text-ink-500 transition-colors duration-150 hover:bg-rail hover:text-ink-900 disabled:opacity-40">
               <Icon name="external" className="h-4 w-4" />
             </button>
-            <button title="Delete" onClick={() => setConfirmDelete(true)} className="rounded p-1.5 text-[#44546F] hover:bg-red-50 hover:text-red-700">
+            <button title="Delete" aria-label="Delete assignment" onClick={() => setConfirmDelete(true)} className="inline-flex h-9 w-9 items-center justify-center rounded-lg text-ink-500 transition-colors duration-150 hover:bg-[#FDECEC] hover:text-[#8F1D17]">
               <Icon name="trash" className="h-4 w-4" />
             </button>
-            <button title="Close" onClick={onClose} className="rounded p-1.5 text-[#44546F] hover:bg-[#F1F2F4]">
+            <button ref={closeRef} title="Close panel" aria-label="Close panel" onClick={onClose} className="inline-flex h-9 w-9 items-center justify-center rounded-lg bg-rail text-ink-700 transition-colors duration-150 hover:bg-rail-hover hover:text-ink-900">
               <Icon name="x" className="h-4 w-4" />
             </button>
           </span>
         </div>
 
         {confirmDelete && (
-          <div className="flex items-center justify-between gap-2 border-b border-red-200 bg-red-50 px-4 py-2.5">
-            <p className="text-[13px] font-medium text-red-800">Delete {issue.key} permanently?</p>
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#B3261E]/20 bg-[#FDECEC] px-4 py-2.5">
+            <p className="text-[13px] font-bold text-[#8F1D17]">Delete {issue.key} permanently?</p>
             <span className="flex gap-1.5">
-              <button onClick={() => setConfirmDelete(false)} className="rounded-md border border-[#DFE1E6] bg-white px-2.5 py-1.5 text-[13px] font-medium text-[#44546F]">
+              <Button variant="secondary" size="sm" onClick={() => setConfirmDelete(false)}>
                 Keep
-              </button>
-              <button onClick={() => onDelete(issue.key)} className="rounded-md bg-red-600 px-2.5 py-1.5 text-[13px] font-semibold text-white hover:bg-red-700">
+              </Button>
+              <Button variant="danger" size="sm" onClick={() => onDelete(issue.key)}>
                 Delete
-              </button>
+              </Button>
             </span>
           </div>
         )}
 
-        <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
-          <h2 className="text-[19px] font-semibold leading-snug tracking-tight">{content?.title ?? issue.aim}</h2>
-          <p className="mt-1 text-[12px] text-[#626F86]">
-            Created {timeAgo(issue.createdAt)}
+        <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4 sm:px-5">
+          <h2 className="text-[19px] font-extrabold leading-snug tracking-tight">{content?.title ?? issue.aim}</h2>
+          <p className="mt-1 text-[12.5px] text-ink-400">
+            {fullDate(issue.createdAt)} · Updated {timeAgo(issue.updatedAt ?? issue.createdAt)}
             {issue.experimentNumber ? ` · Experiment ${issue.experimentNumber}` : ''}
           </p>
 
-          <dl className="mt-4 grid grid-cols-2 gap-x-4 gap-y-3 rounded-lg border border-[#DFE1E6] bg-[#FAFBFC] p-3.5 text-[13px]">
+          <dl className="mt-4 grid grid-cols-2 gap-x-4 gap-y-3 rounded-xl border border-line bg-white p-3.5 text-[13px]">
             <div>
-              <dt className="text-[11px] font-semibold uppercase tracking-wide text-[#8590A2]">Subject</dt>
+              <dt className="text-[11px] font-bold uppercase tracking-[0.06em] text-ink-300">Subject</dt>
               <dd className="mt-1">
                 <SubjectTag subject={issue.subject} />
               </dd>
             </div>
             <div>
-              <dt className="text-[11px] font-semibold uppercase tracking-wide text-[#8590A2]">Priority</dt>
-              <dd className="mt-1 font-medium" style={{ color: prio.color }}>
+              <dt className="text-[11px] font-bold uppercase tracking-[0.06em] text-ink-300">Difficulty</dt>
+              <dd className="mt-1 font-bold" style={{ color: prio.color }}>
                 {prio.glyph} {prio.label}
               </dd>
             </div>
             <div>
-              <dt className="text-[11px] font-semibold uppercase tracking-wide text-[#8590A2]">Technology</dt>
-              <dd className="mt-1 font-medium">{issue.technology || '—'}</dd>
+              <dt className="text-[11px] font-bold uppercase tracking-[0.06em] text-ink-300">Technology</dt>
+              <dd className="mt-1 font-semibold">{issue.technology || '—'}</dd>
             </div>
             <div>
-              <dt className="text-[11px] font-semibold uppercase tracking-wide text-[#8590A2]">Template</dt>
-              <dd className="mt-1 font-mono text-[12px]">
+              <dt className="text-[11px] font-bold uppercase tracking-[0.06em] text-ink-300">Template</dt>
+              <dd className="mt-1 text-[12.5px] font-semibold">
                 {issue.record?.template?.id ?? issue.templateId ?? 'default'}{' '}
-                <span className="text-[#8590A2]">v{issue.record?.template?.version ?? 1}</span>
+                <span className="font-medium text-ink-300">v{issue.record?.template?.version ?? 1}</span>
               </dd>
             </div>
             {prov && (
               <div className="col-span-2">
-                <dt className="text-[11px] font-semibold uppercase tracking-wide text-[#8590A2]">Provider</dt>
-                <dd className="mt-1 font-mono text-[12px]">
+                <dt className="text-[11px] font-bold uppercase tracking-[0.06em] text-ink-300">Provider</dt>
+                <dd className="mt-1 text-[12.5px] font-semibold">
                   {prov.provider} · {prov.model}
                 </dd>
               </div>
@@ -1193,91 +2138,91 @@ function DetailDrawer({ issue, onClose, onRetry, onDelete, onDownload, onOpenPre
           </dl>
 
           {stale && (
-            <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 p-4">
-              <p className="text-[13px] font-semibold text-amber-900">Stored document was cleared</p>
-              <p className="mt-1 text-[12px] text-amber-800">
+            <div className="mt-4 rounded-xl border border-sand-400/50 bg-sand-50 p-4">
+              <p className="text-[13px] font-bold text-sand-700">Stored document was cleared</p>
+              <p className="mt-1 text-[12.5px] text-sand-700/90">
                 The service restarted and no longer has this record. The content below stays readable — regenerate to
                 restore the document preview, exports and editing.
               </p>
-              <button
-                onClick={() => onRetry(issue.key)}
-                className="mt-2.5 inline-flex items-center gap-1.5 rounded-md bg-[#0C66E4] px-3 py-1.5 text-[13px] font-semibold text-white hover:bg-[#0055CC]"
-              >
+              <Button onClick={() => onRetry(issue.key)} className="mt-2.5" size="sm">
                 <Icon name="refresh" className="h-4 w-4" />
                 Regenerate assignment
-              </button>
+              </Button>
             </div>
           )}
 
           {content && (
-            <div className="mt-3 flex flex-col gap-1.5 rounded-lg border border-[#DFE1E6] bg-[#FAFBFC] px-3.5 py-3">
-              <label className="flex cursor-pointer items-center gap-2 text-[13px]">
+            <div className="mt-3 flex flex-col gap-1.5 rounded-xl border border-line bg-white px-3.5 py-3">
+              <label className="flex cursor-pointer items-center gap-2 text-[13px] font-medium">
                 <input
                   type="checkbox"
                   checked={issue.record.options?.includeVivaTitle === true}
                   disabled={optBusy}
                   onChange={(e) => saveOptions({ includeVivaTitle: e.target.checked })}
+                  className="h-4 w-4 accent-[#1A4543]"
                 />
                 Viva Questions heading
-                <span className="text-[12px] text-[#8590A2]">(handwritten by faculty)</span>
+                <span className="text-[12px] text-ink-400">(handwritten by faculty)</span>
               </label>
-              <label className="flex cursor-pointer items-center gap-2 text-[13px]">
+              <label className="flex cursor-pointer items-center gap-2 text-[13px] font-medium">
                 <input
                   type="checkbox"
                   checked={issue.record.options?.typedConclusion !== false}
                   disabled={optBusy}
                   onChange={(e) => saveOptions({ typedConclusion: e.target.checked })}
+                  className="h-4 w-4 accent-[#1A4543]"
                 />
                 Typed conclusion
-                <span className="text-[12px] text-[#8590A2]">(uncheck for handwriting space)</span>
+                <span className="text-[12px] text-ink-400">(uncheck for handwriting space)</span>
               </label>
-              {optError && <p className="break-words text-[12px] text-red-700">{optError}</p>}
+              {optError && <p className="break-words text-[12px] text-[#8F1D17]">{optError}</p>}
             </div>
           )}
 
           {recordGone && (
-            <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 p-4">
-              <p className="text-[13px] font-semibold text-amber-900">This preview expired</p>
-              <p className="mt-1 text-[12px] text-amber-800">The API restarted and no longer holds this record. Retry generation to create a fresh one.</p>
-              <button onClick={() => onRetry(issue.key)} className="mt-2.5 inline-flex items-center gap-1.5 rounded-md bg-[#0C66E4] px-3 py-1.5 text-[13px] font-semibold text-white hover:bg-[#0055CC]">
+            <div className="mt-4 rounded-xl border border-sand-400/50 bg-sand-50 p-4">
+              <p className="text-[13px] font-bold text-sand-700">This preview expired</p>
+              <p className="mt-1 text-[12.5px] text-sand-700/90">The service restarted and no longer holds this record. Retry generation to create a fresh one.</p>
+              <Button onClick={() => onRetry(issue.key)} size="sm" className="mt-2.5">
                 <Icon name="refresh" className="h-4 w-4" />
                 Retry generation
-              </button>
+              </Button>
             </div>
           )}
 
           {issue.status === 'inprogress' && (
-            <div className="mt-4 flex flex-col gap-2 rounded-lg border border-blue-200 bg-[#F7FAFF] p-4">
-              <div className="flex items-center gap-2 text-[13px] font-semibold text-[#0055CC]">
+            <div className="mt-4 flex flex-col gap-2.5 rounded-xl border border-pine-900/15 bg-pine-50 p-4">
+              <div className="flex items-center gap-2 text-[13px] font-bold text-pine-900">
                 <Spinner />
-                Generating assignment content…
+                Generating assignment…
               </div>
-              <div className="h-1.5 overflow-hidden rounded-full bg-[#DFE1E6]">
-                <div className="h-full w-2/3 animate-pulse rounded-full bg-[#0C66E4]" />
+              <p className="text-[12.5px] text-pine-900/70">This usually takes under a minute. You can keep browsing — we&apos;ll notify you when it&apos;s ready.</p>
+              <div className="h-1.5 overflow-hidden rounded-full bg-pine-900/10">
+                <div className="h-full w-2/3 animate-pulse rounded-full bg-pine-800" />
               </div>
             </div>
           )}
 
           {issue.status === 'failed' && (
-            <div className="mt-4 rounded-lg border border-red-200 bg-red-50 p-4">
-              <p className="text-[13px] font-semibold text-red-800">Generation needs attention</p>
-              <p className="mt-1 break-words text-[12px] text-red-700">{issue.error || 'The service could not complete this request.'}</p>
-              <button onClick={() => onRetry(issue.key)} className="mt-2.5 inline-flex items-center gap-1.5 rounded-md bg-red-600 px-3 py-1.5 text-[13px] font-semibold text-white hover:bg-red-700">
+            <div className="mt-4 rounded-xl border border-[#B3261E]/20 bg-[#FDECEC] p-4">
+              <p className="text-[13px] font-bold text-[#8F1D17]">Generation needs attention</p>
+              <p className="mt-1 break-words text-[12.5px] text-[#8F1D17]/90">{issue.error || 'The service could not complete this request.'}</p>
+              <Button variant="danger" size="sm" onClick={() => onRetry(issue.key)} className="mt-2.5">
                 <Icon name="refresh" className="h-4 w-4" />
                 Retry generation
-              </button>
+              </Button>
             </div>
           )}
 
           {!content && issue.status !== 'inprogress' && issue.status !== 'failed' && (
-            <div className="mt-4 rounded-lg border border-[#DFE1E6] bg-[#FAFBFC] p-4 text-[13px] text-[#44546F]">
-              <p className="font-semibold text-[#172B4D]">Aim</p>
+            <div className="mt-4 rounded-xl border border-line bg-white p-4 text-[13px] text-ink-700">
+              <p className="font-bold text-ink-900">Aim</p>
               <p className="mt-1">{issue.aim}</p>
-              {issue.description && <p className="mt-2 text-[#626F86]">{issue.description}</p>}
-              <button onClick={() => onRetry(issue.key)} className="mt-3 inline-flex items-center gap-1.5 rounded-md bg-[#0C66E4] px-3 py-1.5 font-semibold text-white hover:bg-[#0055CC]">
+              {issue.description && <p className="mt-2 text-ink-500">{issue.description}</p>}
+              <Button onClick={() => onRetry(issue.key)} className="mt-3">
                 <Icon name="send" className="h-4 w-4" />
                 Generate assignment
-              </button>
+              </Button>
             </div>
           )}
 
@@ -1285,15 +2230,15 @@ function DetailDrawer({ issue, onClose, onRetry, onDelete, onDownload, onOpenPre
             <div className="mt-5 flex flex-col gap-6 pb-2">
               <section>
                 <SectionHeading icon="send">Aim</SectionHeading>
-                <p className="mt-1.5 rounded-md bg-[#F7F8FA] px-3 py-2.5 text-[13px] leading-relaxed">{content.aim}</p>
+                <p className="mt-1.5 rounded-lg bg-white px-3 py-2.5 text-[13px] leading-relaxed ring-1 ring-inset ring-line-soft">{content.aim}</p>
               </section>
 
               <section>
                 <SectionHeading icon="check">Objectives · {content.objectives.length}</SectionHeading>
                 <ul className="mt-1.5 flex flex-col gap-1.5">
                   {content.objectives.map((o, i) => (
-                    <li key={i} className="flex items-start gap-2.5 rounded-md border border-[#EBECF0] px-3 py-2 text-[13px]">
-                      <span className="mt-0.5 flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-full bg-emerald-50 text-emerald-600 ring-1 ring-inset ring-emerald-200">
+                    <li key={i} className="flex items-start gap-2.5 rounded-lg bg-white px-3 py-2 text-[13px] ring-1 ring-inset ring-line-soft">
+                      <span className="mt-0.5 flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-full bg-sage-100 text-pine-900 ring-1 ring-inset ring-sage-300/60">
                         <Icon name="check" className="h-3 w-3" />
                       </span>
                       {o}
@@ -1306,7 +2251,7 @@ function DetailDrawer({ issue, onClose, onRetry, onDelete, onDownload, onOpenPre
                 <SectionHeading icon="book">Theory</SectionHeading>
                 <div className="mt-1.5 flex flex-col gap-2.5">
                   {content.theory.map((t, i) => (
-                    <p key={i} className="text-[13px] leading-relaxed text-[#334155]">
+                    <p key={i} className="text-[13px] leading-relaxed text-ink-700">
                       {t}
                     </p>
                   ))}
@@ -1317,15 +2262,15 @@ function DetailDrawer({ issue, onClose, onRetry, onDelete, onDownload, onOpenPre
                 <SectionHeading icon="list">Steps · {content.steps.length}</SectionHeading>
                 <ol className="mt-2 flex flex-col gap-3">
                   {content.steps.map((s) => (
-                    <li key={s.number} className="rounded-lg border border-[#DFE1E6]">
-                      <div className="flex items-center gap-2.5 border-b border-[#EBECF0] bg-[#FAFBFC] px-3 py-2">
-                        <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-[#0C66E4] font-mono text-[12px] font-bold text-white">
+                    <li key={s.number} className="overflow-hidden rounded-xl border border-line bg-white">
+                      <div className="flex items-center gap-2.5 border-b border-line-soft bg-paper px-3 py-2">
+                        <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-pine-900 text-[12px] font-bold text-white">
                           {s.number}
                         </span>
-                        <p className="text-[13px] font-semibold">{s.title}</p>
+                        <p className="text-[13px] font-bold">{s.title}</p>
                       </div>
                       <div className="px-3 py-2.5">
-                        <ul className="flex list-disc flex-col gap-1 pl-5 text-[13px] text-[#334155]">
+                        <ul className="flex list-disc flex-col gap-1 pl-5 text-[13px] text-ink-700">
                           {s.description.map((d, j) => (
                             <li key={j}>{d}</li>
                           ))}
@@ -1343,7 +2288,7 @@ function DetailDrawer({ issue, onClose, onRetry, onDelete, onDownload, onOpenPre
 
               <section>
                 <SectionHeading icon="file">Conclusion</SectionHeading>
-                <p className="mt-1.5 text-[13px] leading-relaxed text-[#334155]">{content.conclusion}</p>
+                <p className="mt-1.5 text-[13px] leading-relaxed text-ink-700">{content.conclusion}</p>
               </section>
 
               {(issue.record?.sources?.length > 0) && (
@@ -1351,8 +2296,8 @@ function DetailDrawer({ issue, onClose, onRetry, onDelete, onDownload, onOpenPre
                   <SectionHeading icon="external">Sources used · {issue.record.sources.length}</SectionHeading>
                   <ul className="mt-1.5 flex flex-col gap-1.5">
                     {issue.record.sources.map((s, i) => (
-                      <li key={i} className="rounded-md border border-[#EBECF0] px-3 py-2 text-[13px]">
-                        <a href={s.url} target="_blank" rel="noreferrer" className="font-medium text-[#0C66E4] hover:underline">
+                      <li key={i} className="rounded-lg bg-white px-3 py-2 text-[13px] ring-1 ring-inset ring-line-soft">
+                        <a href={s.url} target="_blank" rel="noreferrer" className="font-semibold text-pine-800 hover:underline">
                           {s.title || s.url}
                         </a>
                       </li>
@@ -1365,16 +2310,16 @@ function DetailDrawer({ issue, onClose, onRetry, onDelete, onDownload, onOpenPre
                 <section>
                   <SectionHeading icon="download">Exports</SectionHeading>
                   <div className="mt-2 flex flex-wrap gap-2">
-                    <button onClick={() => exportFile('docx')} disabled={exportBusy !== ''} className="inline-flex items-center gap-1.5 rounded-md border border-[#DFE1E6] px-2.5 py-1.5 text-[13px] font-medium text-[#44546F] hover:bg-[#F7F8FA] disabled:opacity-50">
+                    <Button variant="secondary" size="sm" onClick={() => exportFile('docx')} disabled={exportBusy !== ''}>
                       <Icon name="download" className="h-4 w-4" />
                       {exportBusy === 'docx' ? 'Preparing…' : 'Export DOCX'}
-                    </button>
-                    <button onClick={() => exportFile('pdf')} disabled={exportBusy !== ''} className="inline-flex items-center gap-1.5 rounded-md border border-[#DFE1E6] px-2.5 py-1.5 text-[13px] font-medium text-[#44546F] hover:bg-[#F7F8FA] disabled:opacity-50">
+                    </Button>
+                    <Button variant="secondary" size="sm" onClick={() => exportFile('pdf')} disabled={exportBusy !== ''}>
                       <Icon name="download" className="h-4 w-4" />
                       {exportBusy === 'pdf' ? 'Compiling…' : 'Export PDF'}
-                    </button>
+                    </Button>
                   </div>
-                  {exportError && <p className="mt-2 break-words text-[12px] text-red-700">{exportError}</p>}
+                  {exportError && <p className="mt-2 break-words text-[12px] text-[#8F1D17]">{exportError}</p>}
                 </section>
               )}
 
@@ -1382,7 +2327,7 @@ function DetailDrawer({ issue, onClose, onRetry, onDelete, onDownload, onOpenPre
                 <section>
                   <div className="flex items-center justify-between">
                     <SectionHeading icon="check">Edit sections</SectionHeading>
-                    <button onClick={() => { setEditing((v) => !v); setEditError('') }} className="text-[12px] font-medium text-[#0C66E4] hover:underline">
+                    <button onClick={() => { setEditing((v) => !v); setEditError('') }} className="text-[12.5px] font-bold text-pine-800 hover:underline">
                       {editing ? 'Done' : 'Edit'}
                     </button>
                   </div>
@@ -1391,8 +2336,8 @@ function DetailDrawer({ issue, onClose, onRetry, onDelete, onDownload, onOpenPre
                     {EDITABLE_SECTIONS.map((s) => (
                       <div key={s}>
                         <div className="mb-1 flex items-center justify-between">
-                          <p className="text-[12px] font-semibold capitalize text-[#44546F]">{s}</p>
-                          <button onClick={() => regenSection(s)} disabled={regenBusy !== ''} className="text-[12px] font-medium text-[#0C66E4] hover:underline disabled:opacity-50">
+                          <p className="text-[12px] font-bold capitalize text-ink-700">{s}</p>
+                          <button onClick={() => regenSection(s)} disabled={regenBusy !== ''} className="text-[12px] font-bold text-pine-800 hover:underline disabled:opacity-50">
                             {regenBusy === s ? 'Regenerating…' : 'Regenerate'}
                           </button>
                         </div>
@@ -1401,16 +2346,16 @@ function DetailDrawer({ issue, onClose, onRetry, onDelete, onDownload, onOpenPre
                           onChange={(e) => setDrafts((d) => ({ ...d, [s]: e.target.value }))}
                           rows={['title', 'aim'].includes(s) ? 2 : 6}
                           spellCheck={false}
-                          className="w-full rounded-md border border-[#DFE1E6] px-2.5 py-2 font-mono text-[12px] leading-relaxed focus:border-[#0C66E4] focus:outline-none"
+                          className="w-full rounded-lg border border-line bg-white px-2.5 py-2 font-mono text-[12px] leading-relaxed transition-colors focus:border-pine-800 focus:outline-none focus:ring-2 focus:ring-pine-900/15"
                         />
                       </div>
                     ))}
                     <div>
-                      <button onClick={saveAllSections} disabled={saveBusy} className="rounded-md bg-[#0C66E4] px-3 py-1.5 text-[13px] font-semibold text-white hover:bg-[#0055CC] disabled:opacity-70">
+                      <Button onClick={saveAllSections} disabled={saveBusy} size="sm">
                         {saveBusy ? 'Saving…' : 'Save all sections'}
-                      </button>
+                      </Button>
                     </div>
-                    {editError && <p className="break-words text-[12px] text-red-700">{editError}</p>}
+                    {editError && <p className="break-words text-[12px] text-[#8F1D17]">{editError}</p>}
                   </div>
                 )}
                 </section>
@@ -1420,52 +2365,52 @@ function DetailDrawer({ issue, onClose, onRetry, onDelete, onDownload, onOpenPre
                 <section>
                   <div className="flex items-center justify-between">
                     <SectionHeading icon="file">LaTeX source</SectionHeading>
-                    <button onClick={loadLatex} disabled={latexBusy} className="text-[12px] font-medium text-[#0C66E4] hover:underline disabled:opacity-50">
+                    <button onClick={loadLatex} disabled={latexBusy} className="text-[12.5px] font-bold text-pine-800 hover:underline disabled:opacity-50">
                       {latex === null ? (latexBusy ? 'Loading…' : 'Load') : 'Reload'}
                     </button>
                   </div>
                 {latex !== null && (
-                  <div className="mt-2 overflow-hidden rounded-md border border-[#DFE1E6] bg-[#FAFBFC]">
+                  <div className="mt-2 overflow-hidden rounded-lg border border-line bg-white">
                     <div className="max-h-[50vh] overflow-auto">
-                      <div className="sticky top-0 z-10 flex items-center justify-between gap-2 border-b border-[#EBECF0] bg-[#FAFBFC]/95 px-2.5 py-1.5 backdrop-blur">
-                        <span className="font-mono text-[11px] text-[#8590A2]">latex</span>
-                        <button onClick={copyLatex} className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-[12px] font-medium text-[#44546F] hover:bg-[#EBECF0]">
+                      <div className="sticky top-0 z-10 flex items-center justify-between gap-2 border-b border-line-soft bg-paper px-2.5 py-1.5">
+                        <span className="text-[11px] font-bold text-ink-400">latex</span>
+                        <button onClick={copyLatex} className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-[12px] font-semibold text-ink-500 transition-colors hover:bg-rail">
                           <Icon name={copiedLatex ? 'check' : 'copy'} className="h-3.5 w-3.5" />
                           {copiedLatex ? 'Copied!' : 'Copy code'}
                         </button>
                       </div>
                       <pre className="whitespace-pre-wrap break-words px-3 py-2.5 font-mono text-[11px] leading-relaxed">{latex}</pre>
                     </div>
-                    <p className="border-t border-[#EBECF0] px-2.5 py-1.5 text-[12px] text-[#626F86]">PDF export compiles this source in an isolated container.</p>
+                    <p className="border-t border-line-soft px-2.5 py-1.5 text-[12px] text-ink-400">PDF export compiles this source in an isolated container.</p>
                   </div>
                 )}
-                {latexError && <p className="mt-2 break-words text-[12px] text-red-700">{latexError}</p>}
+                {latexError && <p className="mt-2 break-words text-[12px] text-[#8F1D17]">{latexError}</p>}
                 </section>
               )}
 
               {!stale && (
                 <section>
                   <SectionHeading icon="file">Document preview</SectionHeading>
-                  <p className="mt-1 text-[12px] text-[#626F86]">Department header and watermark applied on every page.</p>
-                  <div className="mt-2 overflow-hidden rounded-lg border border-[#DFE1E6]">
+                  <p className="mt-1 text-[12px] text-ink-400">Department header and watermark applied on every page.</p>
+                  <div className="mt-2 overflow-hidden rounded-xl border border-line bg-white">
                     <iframe title={`Document preview for ${issue.key}`} key={previewKey} src={`${apiBase}/api/v1/assignments/${issue.record.id}/html`} className="h-[420px] w-full bg-white" />
                   </div>
                   <div className="mt-2 flex flex-wrap gap-2">
-                    <button onClick={onDownload} className="inline-flex items-center gap-1.5 rounded-md border border-[#DFE1E6] px-2.5 py-1.5 text-[13px] font-medium text-[#44546F] hover:bg-[#F7F8FA]">
+                    <Button variant="secondary" size="sm" onClick={onDownload}>
                       <Icon name="download" className="h-4 w-4" />
                       Download HTML
-                    </button>
-                    <button onClick={onOpenPreview} className="inline-flex items-center gap-1.5 rounded-md border border-[#DFE1E6] px-2.5 py-1.5 text-[13px] font-medium text-[#44546F] hover:bg-[#F7F8FA]">
+                    </Button>
+                    <Button variant="secondary" size="sm" onClick={onOpenPreview}>
                       <Icon name="external" className="h-4 w-4" />
                       Print
-                    </button>
-                    <button onClick={() => setShowRawJson((v) => !v)} className="inline-flex items-center gap-1.5 rounded-md border border-[#DFE1E6] px-2.5 py-1.5 text-[13px] font-medium text-[#44546F] hover:bg-[#F7F8FA]">
+                    </Button>
+                    <Button variant="ghost" size="sm" onClick={() => setShowRawJson((v) => !v)}>
                       <Icon name="copy" className="h-4 w-4" />
                       {showRawJson ? 'Hide JSON' : 'View JSON'}
-                    </button>
+                    </Button>
                   </div>
                   {showRawJson && (
-                    <pre className="mt-2 max-h-64 overflow-auto rounded-md bg-[#172B4D] p-3 font-mono text-[11px] leading-relaxed text-slate-100">
+                    <pre className="mt-2 max-h-64 overflow-auto rounded-lg bg-pine-950 p-3 font-mono text-[11px] leading-relaxed text-slate-100">
                       {JSON.stringify({ provenance: issue.record.provenance, content }, null, 2)}
                     </pre>
                   )}
@@ -1478,29 +2423,6 @@ function DetailDrawer({ issue, onClose, onRetry, onDelete, onDownload, onOpenPre
     </>
   )
 }
-
-/* ------------------------------- modal shell ------------------------------ */
-
-function ModalShell({ title, onClose, wide, children }) {
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-[#091E42]/55" onClick={onClose} />
-      <div className={`relative flex max-h-[92vh] w-full ${wide ? 'max-w-2xl' : 'max-w-lg'} flex-col overflow-hidden rounded-xl bg-white shadow-[0_16px_48px_rgba(9,30,66,0.32)]`}>
-        <div className="flex items-center gap-2 border-b border-[#DFE1E6] px-5 py-3.5">
-          <h2 className="text-[15px] font-semibold">{title}</h2>
-          <button onClick={onClose} className="ml-auto rounded p-1.5 text-[#626F86] hover:bg-[#F1F2F4]" title="Close">
-            <Icon name="x" className="h-4 w-4" />
-          </button>
-        </div>
-        <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">{children}</div>
-      </div>
-    </div>
-  )
-}
-
-const modalInputCls =
-  'w-full rounded-md border border-[#DFE1E6] bg-white px-2.5 py-2 text-[13px] placeholder:text-[#8590A2] hover:border-[#8590A2] focus:border-[#0C66E4] focus:outline-none focus:ring-1 focus:ring-[#0C66E4]'
-const modalLabelCls = 'mb-1 block text-[12px] font-semibold text-[#44546F]'
 
 /* ------------------------------- login modal ------------------------------ */
 
@@ -1525,7 +2447,7 @@ function LoginModal({ onClose, onLogin }) {
       })
       const data = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(data?.error ?? "Couldn't log you in. Please try again.")
-      onLogin({ token: data.token, email })
+      onLogin({ token: data.token, email, name: mode === 'register' ? name : '' })
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     } finally {
@@ -1534,172 +2456,56 @@ function LoginModal({ onClose, onLogin }) {
   }
 
   return (
-    <ModalShell title={mode === 'login' ? 'Log in' : 'Register'} onClose={onClose}>
-      <form onSubmit={submit}>
+    <ModalShell
+      title={mode === 'login' ? 'Welcome back' : 'Create your account'}
+      subtitle={mode === 'login' ? 'Log in to generate and manage practicals.' : 'One account for all your practicals and templates.'}
+      onClose={onClose}
+      footer={
+        <div className="flex items-center justify-between gap-2">
+          <button type="button" onClick={() => { setMode(mode === 'login' ? 'register' : 'login'); setError('') }} className="text-[13px] font-semibold text-pine-800 hover:underline">
+            {mode === 'login' ? 'Need an account? Register' : 'Have an account? Log in'}
+          </button>
+          <Button onClick={() => document.getElementById('login-form')?.requestSubmit()} disabled={busy}>
+            {busy ? 'Working…' : mode === 'login' ? 'Log in' : 'Register'}
+          </Button>
+        </div>
+      }
+    >
+      <form id="login-form" onSubmit={submit} className="flex flex-col gap-3">
         {mode === 'register' && (
-          <div className="mb-3">
-            <label className={modalLabelCls}>Name</label>
-            <input value={name} onChange={(e) => setName(e.target.value)} className={modalInputCls} />
-          </div>
+          <Field label="Name">
+            <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Your name" className={inputCls} autoComplete="name" />
+          </Field>
         )}
-        <div className="mb-3">
-          <label className={modalLabelCls}>Email</label>
-          <input type="email" required value={email} onChange={(e) => setEmail(e.target.value)} className={modalInputCls} />
-        </div>
-        <div className="mb-3">
-          <label className={modalLabelCls}>Password (min 8 chars)</label>
-          <input type="password" required minLength={8} value={password} onChange={(e) => setPassword(e.target.value)} className={modalInputCls} />
-        </div>
-        {error && <p className="mb-3 rounded-md bg-red-50 px-3 py-2 text-[13px] font-medium text-red-700">{error}</p>}
-        <button type="submit" disabled={busy} className="rounded-md bg-[#0C66E4] px-4 py-2 text-[13px] font-semibold text-white hover:bg-[#0055CC] disabled:opacity-70">
-          {busy ? 'Working…' : mode === 'login' ? 'Log in' : 'Register'}
-        </button>
-        <button type="button" onClick={() => { setMode(mode === 'login' ? 'register' : 'login'); setError('') }} className="ml-3 text-[13px] text-[#0C66E4] hover:underline">
-          {mode === 'login' ? 'Need an account? Register' : 'Have an account? Log in'}
-        </button>
+        <Field label="Email">
+          <input type="email" required value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@college.edu" className={inputCls} autoComplete="email" />
+        </Field>
+        <Field label="Password" hint="Minimum 8 characters.">
+          <input type="password" required minLength={8} value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••••••" className={inputCls} autoComplete={mode === 'login' ? 'current-password' : 'new-password'} />
+        </Field>
+        {error && <p className="rounded-lg bg-[#FDECEC] px-3 py-2 text-[13px] font-medium text-[#8F1D17]">{error}</p>}
+        <button type="submit" className="hidden" aria-hidden="true" tabIndex={-1}>submit</button>
       </form>
     </ModalShell>
   )
 }
 
-/* ------------------------------ templates modal ---------------------------- */
-
-function TemplatesModal({ templates, onRefresh, notify, onClose }) {
-  const [name, setName] = useState('')
-  const [file, setFile] = useState(null)
-  const [msg, setMsg] = useState('')
-  const [busy, setBusy] = useState(false)
-
-  async function create(e) {
-    e.preventDefault()
-    if (name.trim().length < 3) { setMsg('Name needs at least 3 characters.'); return }
-    setBusy(true)
-    setMsg('')
-    try {
-      const res = await apiFetch(`${API_BASE}/api/v1/templates`, {
-        method: 'POST',
-        headers: authHeaders({ 'content-type': 'application/json' }),
-        body: JSON.stringify({ name: name.trim() }),
-        signal: AbortSignal.timeout(30000),
-      })
-      const data = await res.json().catch(() => ({}))
-      if (!res.ok) throw new Error(data?.error ?? "Couldn't create the template. Please try again.")
-      setName('')
-      onRefresh()
-      notify('success', 'Template created', `${data.template.name} v${data.template.version} (draft).`)
-    } catch (err) {
-      setMsg(err instanceof Error ? err.message : String(err))
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  async function importPdf(e) {
-    e.preventDefault()
-    if (!file) { setMsg('Choose a sample PDF first.'); return }
-    setBusy(true)
-    setMsg('')
-    try {
-      const form = new FormData()
-      form.append('file', file)
-      if (name.trim()) form.append('name', name.trim())
-      const res = await apiFetch(`${API_BASE}/api/v1/templates/from-pdf`, {
-        method: 'POST',
-        headers: authHeaders(),
-        body: form,
-        signal: AbortSignal.timeout(120000),
-      })
-      const data = await res.json().catch(() => ({}))
-      if (!res.ok) throw new Error(data?.error ?? 'Import failed. Please try again.')
-      setFile(null)
-      onRefresh()
-      notify('success', 'Template draft saved', `${data.template.name} — detected: ${(data.analysis?.detectedHeadings ?? []).join(', ') || 'no headings'}.`)
-    } catch (err) {
-      setMsg(err instanceof Error ? err.message : String(err))
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  return (
-    <ModalShell title="Templates" wide onClose={onClose}>
-      <div className="flex flex-col gap-2">
-        {templates.map((t) => (
-          <div key={`${t.id}@${t.version}`} className="flex items-center justify-between gap-2 rounded-lg border border-[#DFE1E6] px-3 py-2">
-            <div>
-              <p className="text-[13px] font-semibold">{t.name}</p>
-              <p className="font-mono text-[11px] text-[#8590A2]">{t.id} · tenant {t.tenantId ?? '—'}</p>
-            </div>
-            <span className="rounded-full bg-[#E9F2FF] px-2 py-0.5 font-mono text-[11px] font-semibold text-[#0055CC]">
-              v{t.version} · {t.status}
-            </span>
-          </div>
-        ))}
-        {templates.length === 0 && <p className="text-[13px] text-[#626F86]">No templates found.</p>}
-      </div>
-      <div className="mt-4 border-t border-[#EBECF0] pt-4">
-        <p className="text-[13px] font-semibold">New blank template</p>
-        <form onSubmit={create} className="mt-2 flex gap-2">
-          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Template name" className={modalInputCls} />
-          <button type="submit" disabled={busy} className="shrink-0 rounded-md bg-[#0C66E4] px-3 py-2 text-[13px] font-semibold text-white hover:bg-[#0055CC] disabled:opacity-70">
-            Create
-          </button>
-        </form>
-      </div>
-      <div className="mt-4 border-t border-[#EBECF0] pt-4">
-        <p className="text-[13px] font-semibold">Import from sample PDF</p>
-        <p className="mt-0.5 text-[12px] text-[#626F86]">Structure is extracted into a v1 draft for review. Uses the name above when set.</p>
-        <form onSubmit={importPdf} className="mt-2 flex flex-col gap-2">
-          <input type="file" accept="application/pdf" onChange={(e) => setFile(e.target.files?.[0] ?? null)} className="text-[13px]" />
-          <button type="submit" disabled={busy} className="inline-flex w-fit items-center gap-1.5 rounded-md bg-[#0C66E4] px-3 py-2 text-[13px] font-semibold text-white hover:bg-[#0055CC] disabled:opacity-70">
-            <Icon name="upload" className="h-4 w-4" />
-            {busy ? 'Analyzing…' : 'Analyze & save draft'}
-          </button>
-        </form>
-      </div>
-      {msg && <p className="mt-3 break-words text-[13px] text-red-700">{msg}</p>}
-    </ModalShell>
-  )
-}
-
-/* ------------------------------ history modal ------------------------------ */
-
-function HistoryModal({ onImport, onClose }) {
-  const [items, setItems] = useState(null)
-  const [error, setError] = useState('')
-
-  useEffect(() => {
-    apiFetch(`${API_BASE}/api/v1/assignments`, { headers: authHeaders(), signal: AbortSignal.timeout(30000) })
-      .then((r) => r.json())
-      .then((d) => setItems(d.assignments ?? []))
-      .catch((err) => setError(err instanceof Error ? err.message : String(err)))
-  }, [])
-
-  return (
-    <ModalShell title="Server history" wide onClose={onClose}>
-      {error && <p className="rounded-md bg-red-50 px-3 py-2 text-[13px] font-medium text-red-700">{error}</p>}
-      {items === null && !error && <p className="text-[13px] text-[#626F86]">Loading…</p>}
-      {items !== null && items.length === 0 && <p className="text-[13px] text-[#626F86]">Nothing on the server yet.</p>}
-      <div className="flex flex-col gap-2">
-        {(items ?? []).map((a) => (
-          <div key={a.id} className="flex items-center justify-between gap-2 rounded-lg border border-[#DFE1E6] px-3 py-2">
-            <div className="min-w-0">
-              <p className="truncate text-[13px] font-semibold">{a.title || a.aim}</p>
-              <p className="truncate font-mono text-[11px] text-[#8590A2]">
-                {a.id} · {a.template?.id} v{a.template?.version} · {a.createdAt ? new Date(a.createdAt).toLocaleString() : ''}
-              </p>
-            </div>
-            <button onClick={() => onImport(a.id)} className="shrink-0 rounded-md border border-[#DFE1E6] px-2.5 py-1.5 text-[13px] font-medium text-[#44546F] hover:bg-[#F7F8FA]">
-              Open in board
-            </button>
-          </div>
-        ))}
-      </div>
-    </ModalShell>
-  )
-}
-
 /* ------------------------------- create modal ------------------------------ */
+
+function FormSection({ index, title, hint, children }) {
+  return (
+    <section className="rounded-xl border border-line bg-white p-4">
+      <div className="flex items-baseline gap-2.5">
+        <span className="text-[11px] font-bold text-sand-600">{index}</span>
+        <div>
+          <h3 className="text-[13.5px] font-bold tracking-tight">{title}</h3>
+          {hint && <p className="mt-0.5 text-[12.5px] text-ink-500">{hint}</p>}
+        </div>
+      </div>
+      <div className="mt-3.5 flex flex-col gap-3.5">{children}</div>
+    </section>
+  )
+}
 
 function CreateModal({ initial, templates = [], onClose, onSubmit }) {
   const [form, setForm] = useState({
@@ -1722,6 +2528,7 @@ function CreateModal({ initial, templates = [], onClose, onSubmit }) {
 
   function submit(e) {
     e.preventDefault()
+    if (submitting) return
     if (form.aim.trim().length < 4) {
       setError('Please describe the aim in at least 4 characters.')
       return
@@ -1735,99 +2542,84 @@ function CreateModal({ initial, templates = [], onClose, onSubmit }) {
     onSubmit(form)
   }
 
-  const inputCls =
-    'w-full rounded-md border border-[#DFE1E6] bg-white px-2.5 py-2 text-[13px] placeholder:text-[#8590A2] hover:border-[#8590A2] focus:border-[#0C66E4] focus:outline-none focus:ring-1 focus:ring-[#0C66E4]'
-  const labelCls = 'mb-1 block text-[12px] font-semibold text-[#44546F]'
-
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-[#091E42]/55" onClick={onClose} />
-      <div className="relative flex max-h-[92vh] w-full max-w-lg flex-col overflow-hidden rounded-xl bg-white shadow-[0_16px_48px_rgba(9,30,66,0.32)]">
-        <div className="flex items-center gap-2 border-b border-[#DFE1E6] px-5 py-3.5">
-          <h2 className="text-[15px] font-semibold">Create assignment</h2>
-          <button onClick={onClose} className="ml-auto rounded p-1.5 text-[#626F86] hover:bg-[#F1F2F4]" title="Close">
-            <Icon name="x" className="h-4 w-4" />
-          </button>
+    <ModalShell
+      title="Create assignment"
+      subtitle="Describe the practical — Markly drafts the full department-ready document."
+      onClose={onClose}
+      wide
+      footer={
+        <div className="flex items-center justify-end gap-2">
+          <Button variant="ghost" onClick={onClose} disabled={submitting}>
+            Cancel
+          </Button>
+          <Button onClick={() => document.getElementById('create-form')?.requestSubmit()} disabled={submitting} size="lg">
+            {submitting ? <Spinner className="h-4 w-4" /> : <Icon name="send" className="h-4 w-4" />}
+            {submitting ? 'Generating…' : 'Generate assignment'}
+          </Button>
         </div>
-
-        <form onSubmit={submit} className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
-          <div>
-            <label className={labelCls} htmlFor="f-aim">
-              Aim <span className="text-red-600">*</span>
-            </label>
+      }
+    >
+      <form id="create-form" onSubmit={submit} className="flex flex-col gap-3">
+        <FormSection index="01" title="Basic information" hint="What is this practical about? Be specific — a clear aim produces a better document.">
+          <Field label="Aim" htmlFor="f-aim" hint={`${form.aim.trim().length}/2000 characters. Example: “Explore subqueries in SQL”.`}>
             <input
               id="f-aim"
               value={form.aim}
               onChange={(e) => set('aim', e.target.value)}
               placeholder="e.g. Explore subqueries in SQL"
-              className={inputCls}
+              className={cx(inputCls, 'font-medium')}
               maxLength={2000}
               autoFocus
             />
-          </div>
-
-          <div className="mt-3">
-            <label className={labelCls} htmlFor="f-desc">
-              Description
-            </label>
+          </Field>
+          <Field label="Description" htmlFor="f-desc" hint="Optional context — scope, outcomes or constraints for this experiment.">
             <textarea
               id="f-desc"
               value={form.description}
               onChange={(e) => set('description', e.target.value)}
               rows={2}
               placeholder="Context, scope or outcomes for this experiment…"
-              className={cx(inputCls, 'resize-y')}
+              className={inputCls}
               maxLength={4000}
             />
-          </div>
+          </Field>
+        </FormSection>
 
-          <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-3">
-            <div>
-              <label className={labelCls} htmlFor="f-subject">
-                Subject
-              </label>
+        <FormSection index="02" title="Experiment details" hint="Used for headers, filing and difficulty-appropriate depth.">
+          <div className="grid grid-cols-1 gap-3.5 sm:grid-cols-2">
+            <Field label="Subject" htmlFor="f-subject">
               <select id="f-subject" value={form.subject} onChange={(e) => set('subject', e.target.value)} className={inputCls}>
                 {SUBJECTS.map((s) => (
                   <option key={s}>{s}</option>
                 ))}
               </select>
-            </div>
-            <div>
-              <label className={labelCls} htmlFor="f-exp">
-                Experiment no.
-              </label>
+            </Field>
+            <Field label="Experiment number" htmlFor="f-exp" hint="1–999. Shown as EXP-07 on cards and headers.">
               <input
                 id="f-exp"
                 value={form.experimentNumber}
                 onChange={(e) => set('experimentNumber', e.target.value.replace(/[^\d]/g, '').slice(0, 3))}
                 placeholder="7"
                 inputMode="numeric"
-                className={cx(inputCls, 'font-mono')}
+                className={inputCls}
               />
-            </div>
-            <div>
-              <label className={labelCls} htmlFor="f-tech">
-                Technology
-              </label>
+            </Field>
+            <Field label="Technology" htmlFor="f-tech" hint="Optional — e.g. SQL, Java, Python.">
               <input id="f-tech" value={form.technology} onChange={(e) => set('technology', e.target.value)} placeholder="SQL, Java…" className={inputCls} maxLength={64} />
-            </div>
+            </Field>
+            <Field label="Difficulty" htmlFor="f-diff" hint="Controls depth of theory and steps.">
+              <select id="f-diff" value={form.difficulty} onChange={(e) => set('difficulty', e.target.value)} className={inputCls}>
+                {DIFFICULTIES.map((d) => (
+                  <option key={d}>{d}</option>
+                ))}
+              </select>
+            </Field>
           </div>
+        </FormSection>
 
-          <div className="mt-3">
-            <label className={labelCls} htmlFor="f-diff">
-              Difficulty
-            </label>
-            <select id="f-diff" value={form.difficulty} onChange={(e) => set('difficulty', e.target.value)} className={inputCls}>
-              {DIFFICULTIES.map((d) => (
-                <option key={d}>{d}</option>
-              ))}
-            </select>
-          </div>
-
-          <div className="mt-3">
-            <label className={labelCls} htmlFor="f-template">
-              Template
-            </label>
+        <FormSection index="03" title="Document settings" hint="Format and finishing options for the final document.">
+          <Field label="Template" htmlFor="f-template" hint="Department format. The active default is used when left empty.">
             <select id="f-template" value={form.templateId} onChange={(e) => set('templateId', e.target.value)} className={inputCls}>
               <option value="">Default (active template)</option>
               {templates.map((t) => (
@@ -1836,44 +2628,35 @@ function CreateModal({ initial, templates = [], onClose, onSubmit }) {
                 </option>
               ))}
             </select>
-          </div>
-
-          <div className="mt-3 flex flex-col gap-2 rounded-md border border-[#DFE1E6] bg-[#FAFBFC] px-3 py-2.5">
-            <label className="flex cursor-pointer items-start gap-2 text-[13px]">
-              <input type="checkbox" checked={form.includeVivaTitle} onChange={(e) => set('includeVivaTitle', e.target.checked)} className="mt-0.5" />
+          </Field>
+          <div className="flex flex-col gap-2 rounded-lg bg-paper px-3 py-2.5 ring-1 ring-inset ring-line-soft">
+            <label className="flex cursor-pointer items-start gap-2.5 text-[13px]">
+              <input type="checkbox" checked={form.includeVivaTitle} onChange={(e) => set('includeVivaTitle', e.target.checked)} className="mt-0.5 h-4 w-4 accent-[#1A4543]" />
               <span>
-                Include Viva Questions heading
-                <span className="block text-[12px] text-[#626F86]">Heading only — questions are handwritten by faculty, never generated. Off for most experiments.</span>
+                <span className="font-bold">Include Viva Questions heading</span>
+                <span className="block text-[12.5px] text-ink-500">Heading only — questions are handwritten by faculty, never generated. Off for most experiments.</span>
               </span>
             </label>
-            <label className="flex cursor-pointer items-start gap-2 text-[13px]">
-              <input type="checkbox" checked={form.typedConclusion} onChange={(e) => set('typedConclusion', e.target.checked)} className="mt-0.5" />
+            <label className="flex cursor-pointer items-start gap-2.5 text-[13px]">
+              <input type="checkbox" checked={form.typedConclusion} onChange={(e) => set('typedConclusion', e.target.checked)} className="mt-0.5 h-4 w-4 accent-[#1A4543]" />
               <span>
-                Type the conclusion
-                <span className="block text-[12px] text-[#626F86]">Uncheck to leave handwriting space (conclusion itself is compulsory).</span>
+                <span className="font-bold">Type the conclusion</span>
+                <span className="block text-[12.5px] text-ink-500">Uncheck to leave handwriting space (the conclusion itself is compulsory).</span>
               </span>
             </label>
           </div>
+        </FormSection>
 
-          {error && <p className="mt-3 rounded-md bg-red-50 px-3 py-2 text-[13px] font-medium text-red-700">{error}</p>}
-
-          <div className="mt-4 flex items-center justify-end gap-2 border-t border-[#EBECF0] pt-4">
-            <button type="button" onClick={onClose} className="rounded-md px-3 py-2 text-[13px] font-medium text-[#44546F] hover:bg-[#F1F2F4]">
-              Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={submitting}
-              className="inline-flex items-center gap-1.5 rounded-md bg-[#0C66E4] px-4 py-2 text-[13px] font-semibold text-white hover:bg-[#0055CC] disabled:opacity-70"
-            >
-              {submitting ? <Spinner className="h-4 w-4" /> : <Icon name="send" className="h-4 w-4" />}
-              {submitting ? 'Creating…' : 'Create & generate'}
-            </button>
+        {error && <p className="rounded-lg bg-[#FDECEC] px-3 py-2 text-[13px] font-medium text-[#8F1D17]">{error}</p>}
+        {submitting && (
+          <div className="flex items-center gap-2.5 rounded-xl border border-pine-900/15 bg-pine-50 px-3.5 py-3">
+            <Spinner />
+            <p className="text-[13px] font-semibold text-pine-900">Generating assignment…</p>
           </div>
-        </form>
-      </div>
-    </div>
+        )}
+        <button type="submit" className="hidden" aria-hidden="true" tabIndex={-1}>submit</button>
+      </form>
+    </ModalShell>
   )
 }
-
 

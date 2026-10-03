@@ -1,34 +1,62 @@
 @import "tailwindcss";
 
 @theme {
-  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
-    "Helvetica Neue", Arial, sans-serif;
+  /* Single UI font across the whole application */
+  --font-sans: "Plus Jakarta Sans", "Inter", -apple-system, BlinkMacSystemFont,
+    "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
     "Liberation Mono", monospace;
 
-  --color-jira-50: #e9f2ff;
-  --color-jira-100: #cce0ff;
-  --color-jira-200: #85b8ff;
-  --color-jira-300: #579dff;
-  --color-jira-400: #388bff;
-  --color-jira-500: #1d7afc;
-  --color-jira-600: #0c66e4;
-  --color-jira-700: #0055cc;
-  --color-jira-800: #09326c;
-  --color-jira-900: #082145;
+  /* Brand — Deep Teal (primary, ~20-25% of UI) */
+  --color-pine-950: #0f2e2d;
+  --color-pine-900: #1a4543;
+  --color-pine-800: #235653;
+  --color-pine-700: #2e6a66;
+  --color-pine-100: #dde8e4;
+  --color-pine-50: #eef4f1;
 
-  --color-ink-900: #172b4d;
-  --color-ink-700: #334155;
-  --color-ink-500: #44546f;
-  --color-ink-400: #626f86;
-  --color-ink-300: #8590a2;
-  --color-ink-200: #626f86;
+  /* Brand — Warm Sand / Gold (accent, sparing) */
+  --color-sand-700: #8a5f22;
+  --color-sand-600: #b3812f;
+  --color-sand-500: #d9a441;
+  --color-sand-400: #f0be6f;
+  --color-sand-200: #f7ddae;
+  --color-sand-100: #faf0d9;
+  --color-sand-50: #fdf7e9;
 
-  --color-line: #dfe1e6;
-  --color-line-soft: #ebecf0;
+  /* Brand — Sage / Mint (secondary surfaces) */
+  --color-sage-700: #44645b;
+  --color-sage-500: #6f9487;
+  --color-sage-300: #b2d0c6;
+  --color-sage-200: #cfdfd9;
+  --color-sage-100: #e6efe9;
+  --color-sage-50: #f1f6f3;
+
+  /* Neutrals — warm, paper-like (60-70% of UI) */
+  --color-paper: #faf8f3;
   --color-canvas: #ffffff;
-  --color-rail: #f7f8fa;
-  --color-rail-hover: #eceff3;
+  --color-ink-900: #1e2a28;
+  --color-ink-700: #35413f;
+  --color-ink-500: #5c6b68;
+  --color-ink-400: #7d8b88;
+  --color-ink-300: #a3adaa;
+
+  --color-line: #e4dfd3;
+  --color-line-soft: #ede9dd;
+  --color-rail: #f3f0e8;
+  --color-rail-hover: #e9e4d5;
+
+  /* Legacy aliases (kept so old classnames don't break) */
+  --color-jira-50: var(--color-pine-50);
+  --color-jira-100: var(--color-pine-100);
+  --color-jira-200: var(--color-sage-200);
+  --color-jira-300: var(--color-sage-300);
+  --color-jira-400: var(--color-pine-700);
+  --color-jira-500: var(--color-pine-800);
+  --color-jira-600: var(--color-pine-900);
+  --color-jira-700: var(--color-pine-950);
+  --color-jira-800: var(--color-pine-950);
+  --color-jira-900: var(--color-pine-950);
 }
 
 html {
@@ -43,7 +71,7 @@ body,
 
 body {
   margin: 0;
-  background: var(--color-canvas);
+  background: var(--color-paper);
   color: var(--color-ink-900);
   font-family: var(--font-sans);
   font-size: 14px;
@@ -52,32 +80,96 @@ body {
   text-rendering: optimizeLegibility;
 }
 
-/* Thin, neutral scrollbars for rails and boards */
+/* Thin, neutral scrollbars */
 * {
   scrollbar-width: thin;
-  scrollbar-color: #c1c7d0 transparent;
+  scrollbar-color: #c9c2b2 transparent;
 }
 *::-webkit-scrollbar {
   width: 8px;
   height: 8px;
 }
 *::-webkit-scrollbar-thumb {
-  background: #c1c7d0;
+  background: #c9c2b2;
   border-radius: 8px;
 }
 *::-webkit-scrollbar-track {
   background: transparent;
 }
 
-/* Consistent focus ring (Jira-like blue) */
+/* Consistent focus ring in brand teal */
 :where(button, a, input, select, textarea, [tabindex]):focus-visible {
-  outline: 2px solid var(--color-jira-600);
-  outline-offset: 1px;
-  border-radius: 4px;
+  outline: 2px solid var(--color-pine-800);
+  outline-offset: 2px;
+  border-radius: 6px;
 }
 
 ::selection {
-  background: var(--color-jira-100);
+  background: var(--color-sage-200);
+}
+
+/* ---- Motion system: subtle, 120–250ms, no bounce/glow ---- */
+@keyframes mk-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes mk-rise {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes mk-pop {
+  from { opacity: 0; transform: translateY(8px) scale(0.99); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes mk-toast-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes mk-shimmer {
+  0% { background-position: -400px 0; }
+  100% { background-position: 400px 0; }
+}
+
+.mk-fade { animation: mk-fade-in 160ms ease-out both; }
+.mk-rise { animation: mk-rise 180ms ease-out both; }
+.mk-pop { animation: mk-pop 200ms ease-out both; }
+.mk-toast { animation: mk-toast-in 200ms ease-out both; }
+
+@media (prefers-reduced-motion: reduce) {
+  .mk-fade, .mk-rise, .mk-pop, .mk-toast { animation: none; }
+  .mk-drawer, .mk-backdrop { transition: none !important; }
+  * { transition-duration: 0.01ms !important; }
+}
+
+.mk-skeleton {
+  background: linear-gradient(90deg, #ece7d9 25%, #f5f1e6 50%, #ece7d9 75%);
+  background-size: 800px 100%;
+  animation: mk-shimmer 1400ms linear infinite;
+}
+
+/* ---- Assignment drawer: one coherent slide + fade interaction ---- */
+/* Panel rests off-screen right; .mk-show slides it in (ease-out 260ms).
+   Removing .mk-show slides it back out (ease-in 240ms). The component
+   stays mounted until the closing transition finishes (see App.jsx). */
+.mk-drawer {
+  transform: translateX(103%);
+  transition: transform 260ms ease-out;
+  will-change: transform;
+}
+.mk-drawer.mk-show {
+  transform: translateX(0);
+}
+.mk-drawer.mk-hide {
+  transform: translateX(103%);
+  transition-duration: 240ms;
+  transition-timing-function: ease-in;
+}
+.mk-backdrop {
+  opacity: 0;
+  transition: opacity 240ms ease;
+}
+.mk-backdrop.mk-show {
+  opacity: 1;
 }
 
 @media print {

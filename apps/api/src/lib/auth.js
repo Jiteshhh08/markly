@@ -52,6 +52,13 @@ export function verifyToken(token) {
   }
 }
 
+// Profile lookup for identity display (name/avatar). Tokens only carry
+// sub+email, so the full profile is resolved here from the same store that
+// register/login use. Returns null when unknown — callers fall back to claims.
+export function getProfileByEmail(email) {
+  return users.get(String(email ?? "").toLowerCase().trim()) ?? null;
+}
+
 export const COOKIE_NAME = "markly_token";
 
 function parseCookies(req) {
