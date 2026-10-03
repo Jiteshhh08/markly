@@ -60,10 +60,10 @@ describe("STAGE3 auth architecture (single source of truth)", () => {
     assert.ok(client.includes("setAuthHooks"), "central 401 reconciliation hook must exist");
   });
 
-  it("VITE_API_URL fallback is empty-string-safe (||, not ??)", () => {
+  it("VITE_API_URL handling is explicit (no ?? footgun; empty means same-origin)", () => {
     const client = readSrc("src/services/api.js");
     assert.ok(!client.includes("VITE_API_URL ??"), "must not use ?? for the baked URL");
-    assert.ok(client.includes("||"), "empty baked var must fall back to the default host");
+    assert.ok(client.includes("same-origin"), "empty var must be documented as same-origin (dev proxy)");
   });
 
   it("AuthContext/AuthProvider is the only auth state owner", () => {
@@ -293,13 +293,21 @@ describe("STAGE3 canonical client behavior", () => {
     }
   });
 
-  it("empty-string base falls back instead of producing relative URLs", async () => {
+  it("explicit empty base means same-origin (dev proxy), unset keeps legacy default", async () => {
     const prev = process.env.VITE_API_URL;
     process.env.VITE_API_URL = "";
     try {
       const fresh = await import(`../../../src/services/api.js?emptybase=${Date.now()}`);
-      assert.equal(fresh.API_BASE, "http://127.0.0.1:4000");
-      assert.ok(fresh.resolveApiUrl("/api/v1/auth/me").startsWith("http"));
+      assert.equal(fresh.API_BASE, "", "explicit empty VITE_API_URL must mean same-origin");
+      assert.equal(fresh.resolveApiUrl("/api/v1/auth/me"), "/api/v1/auth/me");
+    } finally {
+      if (prev === undefined) delete process.env.VITE_API_URL;
+      else process.env.VITE_API_URL = prev;
+    }
+    delete process.env.VITE_API_URL;
+    try {
+      const fresh2 = await import(`../../../src/services/api.js?unsetbase=${Date.now()}`);
+      assert.equal(fresh2.API_BASE, "http://127.0.0.1:4000", "unset var keeps the legacy default");
     } finally {
       if (prev === undefined) delete process.env.VITE_API_URL;
       else process.env.VITE_API_URL = prev;

@@ -1,9 +1,9 @@
 // Canonical Markly API client — the ONLY fetch wrapper the app uses.
 //
 // Contract:
-// - base URL from VITE_API_URL with an empty-string-safe fallback (STAGE 1:
-//   `??` let an empty baked var produce relative URLs against the Vercel
-//   origin). `||` + trim treats ""/whitespace as unset.
+// - base URL from VITE_API_URL. Explicit empty string = same-origin (dev
+//   proxy, so the session cookie stays first-party). Unset = legacy
+//   localhost default. Split production hosting MUST bake an absolute URL.
 // - `credentials: "include"` on every request: the httpOnly `markly_token`
 //   cookie is the canonical browser credential and the only thing that
 //   survives a browser refresh (nothing auth-related lives in browser storage).
@@ -21,18 +21,27 @@
 //   `{ reconcileAuth: false }` and reconcile explicitly.
 
 function readEnvBase() {
+  // Explicit empty string = same-origin (dev proxy): '/api/…' requests stay
+  // first-party so the session cookie is an ordinary same-site cookie that
+  // browsers store and send. Unset = legacy localhost default (cross-site in
+  // local dev — refresh will drop the session). Split production hosting
+  // MUST set an absolute VITE_API_URL (baked at build time).
+  let raw;
   try {
-    const raw =
+    raw =
       typeof import.meta !== "undefined" && import.meta.env
         ? import.meta.env.VITE_API_URL
         : undefined;
-    if (typeof raw === "string" && raw.trim() !== "") return raw.trim().replace(/\/$/, "");
   } catch {
-    // Plain node (tests): import.meta.env is undefined — fall through.
+    // Plain node (tests): import.meta.env is undefined — try process.env.
+    raw = undefined;
   }
-  if (typeof process !== "undefined" && process.env && process.env.VITE_API_URL) {
-    const raw = String(process.env.VITE_API_URL).trim();
-    if (raw !== "") return raw.replace(/\/$/, "");
+  if (raw === undefined && typeof process !== "undefined" && process.env && "VITE_API_URL" in process.env) {
+    raw = process.env.VITE_API_URL;
+  }
+  if (typeof raw === "string") {
+    if (raw.trim() === "") return "";
+    return raw.trim().replace(/\/$/, "");
   }
   return "http://127.0.0.1:4000";
 }
