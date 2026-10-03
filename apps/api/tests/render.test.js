@@ -71,4 +71,35 @@ describe("HTML renderer", () => {
     assert.ok(html.includes("&lt;script&gt;"), "expected escaped script tag");
     assert.equal(escapeHtml(`<>&"'`), "&lt;&gt;&amp;&quot;&#39;");
   });
+
+  it("emits no inline event handlers (helmet CSP blocks script-src-attr)", () => {
+    const html = renderHtml(doc, getDefaultTemplate());
+    assert.ok(!/\son\w+="/i.test(html), "inline event handler leaked into preview document");
+  });
+
+  it("resolves artwork server-side and placeholders missing files", () => {
+    const html = renderHtml(doc, getDefaultTemplate());
+    assert.ok(html.includes('class="doc-header-img"'), "existing header artwork should render an img");
+    const broken = {
+      template: {
+        header: { image: "/assets/definitely-missing.png" },
+        watermark: { image: "/assets/definitely-missing.png" },
+      },
+    };
+    const out = renderHtml(doc, broken);
+    assert.ok(out.includes("doc-header-missing"), "missing header artwork must render the placeholder box");
+    assert.ok(!out.includes('class="watermark-img"'), "missing watermark file must not emit a broken img");
+  });
+
+  it("footers print a bare page number and never the college name", () => {
+    const html = renderHtml(doc, getDefaultTemplate());
+    assert.ok(!html.includes("Thakur College"), "college name must not appear in the document");
+    assert.ok(html.includes('class="pagenum"'), "page number span missing");
+    assert.ok(!html.includes("Page <span"), "page number must be bare (1/2/3), not 'Page N'");
+    const noNum = renderHtml(doc, { template: { footer: { text: "", showPageNumber: false } } });
+    assert.ok(!noNum.includes('class="pagenum"'), "showPageNumber:false must drop the number");
+    const withText = renderHtml(doc, { template: { footer: { text: "Dept", showPageNumber: true } } });
+    assert.ok(withText.includes("Dept") && withText.includes('class="pagenum"'), "text + number combo broken");
+    assert.ok(!withText.includes("Page "), "'Page ' prefix must be gone everywhere");
+  });
 });

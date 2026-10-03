@@ -23,7 +23,7 @@ API `127.0.0.1:4000` → AI `127.0.0.1:8001` → local Mongo or memory.
 
 ## 2. A click's journey — Generate
 
-1. Board card form (`src/App.jsx`) collects aim/subject/experiment/template.
+1. Create modal (`src/features/assignments/CreateModal.jsx`) collects aim/subject/experiment/template.
    Logged out? Generation is not attempted — the login modal opens instead.
 2. `apiFetch('/api/v1/assignments/generate')` (180s timeout) with
    `Authorization: Bearer <memory token>` plus the `markly_token` cookie.
@@ -85,7 +85,7 @@ fresh — but existing cookie sessions survive restarts (stateless JWT, 7d).
 
 | Change | File(s) |
 |---|---|
-| Steps heading / section titles | `src/App.jsx`, `apps/api/src/render/{html,docx,latex}.js` |
+| Steps heading / section titles | `apps/api/src/render/{html,docx,latex}.js` (document) + `src/features/assignments/DetailDrawer.jsx` (drawer editors) |
 | What the LLM is asked / output shape | `services/ai-service/app/prompts.py`, `schemas.py` |
 | Subject behavior (needs research? tech?) | `packages/shared/subject-profiles.json` |
 | PDF layout | `apps/api/src/render/latex.js` (+ `compile.js` for the command) |
@@ -96,14 +96,14 @@ fresh — but existing cookie sessions survive restarts (stateless JWT, 7d).
 | Auth rules + session cookie | `apps/api/src/routes/auth.js`, `lib/auth.js`, `AUTH_REQUIRED`, `COOKIE_SECURE` |
 | Error contract (generic client messages) | `apps/api/src/lib/errors.js`, final middleware in `src/index.js` |
 | Friendly transport errors (offline/timeout) | `apiFetch` in `src/services/api.js` (single choke point) |
-| Empty-board hero + dashboard link | `EmptyState` in `src/App.jsx` |
+| Empty-board hero + dashboard link | `EmptyState` (in `src/components/ui.jsx`) rendered by `src/views/DashboardView.jsx` |
 | Timeouts (UI stalls) | `src/services/api.js` (per-request timeout, 180s for generation) |
 
 ## 7. Environments compared
 
 | | Local dev | Production |
 |---|---|---|
-| Frontend | `npm run dev` :5173 | Vercel build, `VITE_API_URL` baked in |
+| Frontend | `npm run dev` :5173 | Vercel build, `VITE_API_URL` baked in (empty = same-origin via `vercel.json` `/api`+`/assets` rewrites) |
 | API | `node src/index.js` :4000 | container, `127.0.0.1:4000` behind Caddy |
 | AI | `uvicorn …` :8001 | internal container, no public port |
 | DB | local mongo / memory | Atlas (restart-safe for the copy) |

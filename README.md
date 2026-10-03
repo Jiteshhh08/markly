@@ -102,7 +102,7 @@ cd apps/api && npm test                                 # 43 passing: schemas, t
 
 ## Verified on 2026-10-02 (production + local)
 
-- AI-service tests pass; API tests **55/55 pass**; `vite build` succeeds
+- AI-service tests pass; API tests **116/116 pass** (30 suites); `vite build` succeeds
 - Live E2E on the EC2 server: register → JWT → `POST /api/v1/assignments/generate`
   `{aim, subject: DBMS}` → `status=completed` (real Qwen gateway, not stub);
   `POST /:id/pdf` → 200 `application/pdf`, 178,105 bytes, `%PDF-1.7`

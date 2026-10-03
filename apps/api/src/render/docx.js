@@ -66,6 +66,7 @@ export async function renderDocx(content, template, options = {}) {
   const headerImg = assetBuffer(t.header?.image);
   const wmImg = assetBuffer(t.watermark?.image);
   const footerText = t.footer?.text ?? "";
+  const showPageNumber = t.footer?.showPageNumber !== false;
 
   const headerChildren = [];
   if (headerImg) {
@@ -156,7 +157,13 @@ export async function renderDocx(content, template, options = {}) {
             children: [
               new Paragraph({
                 alignment: AlignmentType.CENTER,
-                children: [new TextRun({ text: footerText ? `${footerText}  |  Page ` : "Page ", size: 18 }), PageNumber.CURRENT],
+                children: [
+                  ...(footerText ? [new TextRun({ text: `${footerText}  |  `, size: 18 })] : []),
+                  // PageNumber.CURRENT only emits a real PAGE field when wrapped
+                  // in a TextRun — as a bare paragraph child it serialized as the
+                  // literal text "CURRENT" (invalid OOXML Word silently drops).
+                  ...(showPageNumber ? [new TextRun({ size: 18, children: [PageNumber.CURRENT] })] : []),
+                ],
               }),
             ],
           }),

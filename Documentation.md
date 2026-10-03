@@ -1,6 +1,6 @@
 # Markly — Documentation
 
-> Last audited: 2026-10-02. Covers all of Phases 0–9 as built.
+> Last audited: 2026-10-03. Covers all of Phases 0–9 as built.
 > Companion files: `Utilities.md` (every external dependency/service),
 > `system-overview.md` (guided tour: click journeys, state map, cheat sheet),
 > `deployment-notes.md` (production topology, setup, verification).
@@ -70,9 +70,13 @@ Open `:5173`. Health checks: `:8001/health`, `:4000/api/v1/health`
 
 API (`apps/api/.env`): `PORT` (4000), `AI_SERVICE_URL` (http://127.0.0.1:8001),
 `MONGODB_URI` (unset = in-memory), `RATE_LIMIT_PER_MIN` (60),
-`JWT_SECRET` (set in production), `AUTH_REQUIRED` (`1` enforces tokens, default open),
+`JWT_SECRET` (set in production; the shipped placeholder is rejected when
+`AUTH_REQUIRED=1`), `AUTH_REQUIRED` (`1` enforces tokens, default open),
 `COOKIE_SECURE` (`1` in HTTPS cross-site production for the session cookie),
-`NODE_ENV=production` (prod compose; silences Express debug pages),
+`ALLOWED_ORIGINS` (comma-separated frontend origins allowed to send
+credentialed requests, e.g. `https://marklyai.vercel.app`; empty = reflect any
+origin — the server logs a boot warning when `AUTH_REQUIRED=1` and the list is
+empty), `NODE_ENV=production` (prod compose; silences Express debug pages),
 `REDIS_URL` + `BULLMQ_ENABLED=1` (unset = in-process jobs), `PDF_COMPILE_CMD` (empty/unset =
 native-docker default since the `||`-fallback fix; on Windows-with-WSL-Docker use
 `wsl docker run --rm -v "{wslDir}:/work" -w /work texlive/texlive:latest …`).
@@ -81,8 +85,17 @@ AI (`services/ai-service/.env`): `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL`
 (all three or stub mode), `PORT` (8001), `TAVILY_API_KEY` / `SEARXNG_URL`
 (either activates research), `SANDBOX_DOCKER` (`docker`; bogus value = graceful skip).
 
-Frontend (`.env`): `VITE_API_URL` (http://127.0.0.1:4000; baked at `vite build` time).
-No browser storage anywhere: the login token lives in memory (reload logs out).
+Frontend (`.env`): `VITE_API_URL`, baked at `vite build` time.
+**Explicit empty = same-origin**: local dev via the Vite `/api` + `/assets`
+proxies (`vite.config.js`), production via host rewrites (Vercel `vercel.json` rewrites
+both `/api/*` and `/assets/*` to the API — static files still win over rewrites
+per Vercel docs, so the hashed Vite bundles in `/assets/` are untouched; nginx proxies the same two paths).
+Set an **absolute URL only for split hosting** (page on one origin, API on
+another) — then the session cookie is cross-site and needs `COOKIE_SECURE=1`.
+Unset falls back to the legacy `http://127.0.0.1:4000` (dev only).
+No browser storage anywhere: the session is an httpOnly `markly_token` cookie
+(plus an in-memory Bearer copy), so refresh keeps you logged in and logout
+clears both.
 
 ## 5. Generation pipeline (where each step lives)
 
@@ -110,7 +123,7 @@ No browser storage anywhere: the login token lives in memory (reload logs out).
 - `GET /assignments/:id/docx` → .docx download; `GET /:id/latex` → `{latex, edited}`; `PUT /:id/latex` → save override; `POST /:id/pdf` → compiled PDF or explicit 502
 - `GET /templates`, `GET /templates/:id[?version=N]`, `POST /templates`, `PUT /templates/:id` (forks new version), `POST /templates/from-pdf`
 - `POST /examples/ingest` (multipart PDF), `GET /examples?subject=&q=&k=`
-- `POST /jobs` `{type:"generate", input}` → 202 `{job}`; `GET /jobs/:id` → status + assignment when done
+- `POST /jobs` `{type:"generate", input}` → 202 `{job}`; `GET /jobs/:id` → status + assignment when done; `GET /jobs` → your recent jobs (drives resume-after-refresh: active jobs become generating cards on boot)
 - `GET /assets/*` — tenant artwork + generated PDFs
 
 AI service: `GET /health`, `POST /v1/generate`, `POST /v1/regenerate-section`,
@@ -142,21 +155,29 @@ AI service: `GET /health`, `POST /v1/generate`, `POST /v1/regenerate-section`,
 - Auth: bcrypt + JWT, open dev mode unless `AUTH_REQUIRED=1`. Login/register also set
   an httpOnly `markly_token` cookie (Bearer kept as fallback); the board restores the
   session on boot via `GET /auth/me`, so refresh keeps you logged in with zero browser
-  storage. Logout clears both. CORS allows credentials with a reflected origin.
+  storage. Logout clears both **and wipes the board/templates** (the gated fetch below
+  reloads the right view for the new auth state). CORS follows the `ALLOWED_ORIGINS`
+  allowlist (§4): once set, unlisted cross-origin origins are refused.
 
 ## 8. Frontend (Jira-style workspace board)
 
-Single-page board in `src/App.jsx` (no router): To Do / In Progress / Done columns
+Single-page board (no router): the shell `src/App.jsx` (~670 lines of state +
+composition) delegates rendering to `views/` (`DashboardView`, `AssignmentsView`,
+`HistoryView`, `TemplatesView`) and `features/assignments/` (`data.js` mappers,
+row/card UI, `DetailDrawer`, `CreateModal`). To Do / In Progress / Done columns
 with zero browser storage — the board boots from server history (`GET /assignments`,
 Mongo-backed) and deletes go server-side (`DELETE /assignments/:id`, ownership-checked),
 create modal (aim, subject, experiment, technology, difficulty, template dropdown
 from `GET /templates`), detail drawer (metadata, sections, sources, preview iframe,
 raw JSON), per-section editing + regeneration + save, LaTeX view/edit, DOCX/PDF/HTML
 export with error surfacing, Templates manager (create + sample-PDF import),
-server History (import records onto the board), Login (memory token + httpOnly
+server History (import records onto the board), Login (in-memory token + httpOnly
 cookie; logged-out actions open the login modal instead of failing, and
 templates reload right after login), toasts, retry/delete. Every server call carries a
 180s `AbortSignal` timeout so stalls become errors, never infinite spinners.
+**Refresh-safe generations**: on boot `GET /jobs` rehydrates still-running jobs as
+generating cards and the poll ticker finishes them; completed jobs need no card —
+their assignments arrive via the list. Logout immediately clears the board so no stale records flash.
 The empty board shows a first-assignment hero with a "Go to dashboard" link back
 to the columns.
 
@@ -164,10 +185,14 @@ to the columns.
 
 ```bash
 cd services/ai-service && python tests/test_phase1.py  # also test_phase3/5/6/7/8.py
-cd apps/api && npm test                                # 55 passing
+cd apps/api && npm test                                # 116 passing (30 suites)
 ```
-Covered: schemas, viva rejection, regen, renderer, exports, SQL gate, sandbox/proven-fail paths,
-templates/versioning, auth, queue. Live-verified (isolated ports): full generate→export chain,
+Covered: schemas, viva rejection, regen, renderer (incl. no-inline-handlers/CSP +
+server-side artwork placeholder), exports, SQL gate, sandbox/proven-fail paths,
+templates/versioning, auth (cookie contract, CORS allowlist, jobs ownership),
+queue, persistence/ownership regressions, view-extraction mappers, jobs resume,
+and a production-like E2E pipeline (generate → jobs → HTML/DOCX/LaTeX → board).
+Live-verified (isolated ports): full generate→export chain,
 jobs, ingest, template-from-PDF. Deliberately live-only (need runtimes): texlive compile success,
 Redis/BullMQ transport, Mongo persistence, real search providers.
 
@@ -177,14 +202,17 @@ Never trusted: uploaded PDFs/templates, LLM text (HTML-escaped on render, LaTeX-
 on export), generated code (parsed, never executed on host; sandbox containers only,
 network-isolated, capped), retrieved webpages (text-only, size-capped, scripts dropped,
 marked UNTRUSTED in prompts). Enforced caps: 1MB JSON, 25MB uploads, 200KB LaTeX,
-120s compile timeout. Helmet headers; CORS is open (`*`) for local dev — lock down in
-production along with `JWT_SECRET`, `AUTH_REQUIRED=1`, and Redis rate limiting.
+120s compile timeout. Helmet headers (incl. CSP `script-src-attr 'none'` — the
+generated preview HTML carries **no inline event handlers**; artwork fallbacks are
+resolved server-side). CORS: empty `ALLOWED_ORIGINS` reflects any origin (local
+dev); production sets the allowlist, `JWT_SECRET`, `AUTH_REQUIRED=1`, and Redis
+rate limiting.
 Error contract: clients only ever receive short generic `error` strings
 (`sendError()` in `lib/errors.js`; a final middleware converts anything else,
 including body-parser failures, to JSON). Technical details (stacks, driver text,
 compiler logs, validation dumps) go to the server log only — never the response
 body, the screen, or the browser console. The UI maps transport failures
-(offline/timeout) to friendly copy in one place (`apiFetch` in `src/App.jsx`)
+(offline/timeout) to friendly copy in one place (`apiFetch` in `src/services/api.js`)
 and never shows status codes.
 
 ## 11. Troubleshooting
@@ -200,16 +228,21 @@ and never shows status codes.
 | Board empty after reload but still logged in | Expected: board rebuilds from server history (no browser storage); login persists via cookie |
 | Logged out on every refresh (prod) | Session cookie blocked cross-site → set `COOKIE_SECURE=1` on the server (SameSite=None; Secure), then log in once |
 | Action fails with login modal popping up | Expected: that IS the logged-out/expired-token flow — log in (or re-log in) and retry |
+| Preview: `/assets/tcet-header.png` 404 on Vercel | The host only proxies `/api/*` → add a `/assets/*` rewrite/proxy to the API (repo: `vercel.json`; nginx: `location /assets/`) |
+| Console: CSP blocks "inline event handler" in preview | Preview HTML must stay handler-free (helmet sends `script-src-attr 'none'`); artwork fallbacks are resolved server-side — if you see this, a stale build/old renderer is serving `onerror=` markup |
+| 422 `validation failed after 2 attempts: viva questions…` | The model echoed "viva" (banned, substring-checked) — remove viva mentions from aim/description and regenerate |
 | History empties on restart | Expected without Mongo (memory store); set `MONGODB_URI` |
 
 ## 12. Known gaps (audit 2026-10-02; owner in brackets)
 
 - [done in prod] texlive pulled + end-to-end PDF compile verified on EC2 (178 KB, `%PDF-1.7`)
 - [done in prod] real Qwen gateway live (`Qwen3.6-35B-A3B`); MongoDB Atlas connected (`[api] connected to MongoDB`); frontend on Vercel (`marklyai.vercel.app`) — see `deployment-notes.md`
-- [you] Production hardening still open: lock CORS to the Vercel origin (currently reflects any origin), `JWT_SECRET` rotation schedule, Redis rate limiting
+- [you] Remaining production hardening: `JWT_SECRET` rotation schedule, Redis rate limiting (set `ALLOWED_ORIGINS` on the host — it currently may still be empty, which reflects any origin)
 - [done] Template edits persist to Mongo on save; users rehydrate from Mongo on boot; route-level auth/persistence regression suites added (`apps/api/tests/`)
 - [done] `packages/shared` dead JS wiring removed (data files kept, loaded by path)
 - [done] BullMQ producer/worker queue names unified (`GENERATION_QUEUE`)
+- [done] Production hardening: CORS locked to the `ALLOWED_ORIGINS` allowlist (boot warning when `AUTH_REQUIRED=1` and empty); prod cookie contract pinned by tests; same-origin hosting wired via `/api` + `/assets` rewrites
+- [done] View extraction (`App.jsx` 2240 → ~670 lines; `views/`, `features/assignments/`), refresh-safe job resume (`GET /jobs`), dev same-origin proxy, suite grown to 116 tests
 - [later] Qdrant embeddings behind `retrieve_examples()` (keyword retrieval is fine at current corpus size)
 - [later] "Explain this assignment" tutoring UI (records already carry content + sources)
 - [later] Full shadcn set (hand-rolled Button/Input today), 404 page, frontend error boundaries, list pagination, AI request logging

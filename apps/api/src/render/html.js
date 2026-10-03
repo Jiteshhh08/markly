@@ -1,3 +1,5 @@
+import { resolveAsset } from "../lib/storage.js";
+
 // HTML document renderer (Phase 2).
 // Assignment JSON in -> complete printable HTML document out.
 // The DOCX (Phase 4) and LaTeX (Phase 4) renderers must mirror these same
@@ -60,14 +62,27 @@ export function renderHtml(content, template, options = {}) {
   const header = t.header ?? {};
   const watermark = t.watermark ?? {};
   const footer = t.footer ?? {};
+  // Footer = tenant text (optional) + bare page number (no "Page " prefix —
+  // the same bare 1/2/3 the LaTeX renderer prints via \thepage).
+  const pageNumHtml = footer.showPageNumber ? '<span class="pagenum"></span>' : "";
+  const footerHtml = [escapeHtml(footer.text ?? ""), pageNumHtml].filter(Boolean).join(" &nbsp;|&nbsp; ");
 
-  // Asset refs are URL paths served by the API (/assets/*). When the artwork
-  // file is missing, render a labeled placeholder box in the same position.
+  // Asset refs are URL paths served by the API (/assets/*). Existence is
+  // resolved SERVER-SIDE (resolveAsset) so the document carries no inline
+  // event handlers — helmet's CSP (script-src-attr 'none') would block them
+  // in the preview iframe anyway. Missing artwork renders the same labeled
+  // placeholder box in the same position.
+  const headerMissing = header.image?.startsWith("/assets/") && !resolveAsset(header.image);
+  const watermarkMissing = watermark.image?.startsWith("/assets/") && !resolveAsset(watermark.image);
   const headerImg = header.image
-    ? `<img class="doc-header-img" src="${escapeHtml(header.image)}" alt="${escapeHtml(header.alt ?? "Header")}" onerror="this.outerHTML='<div class=&quot;doc-header-missing&quot;'>[header artwork missing: ${escapeHtml(header.image)}]</div>'" />`
+    ? headerMissing
+      ? `<div class="doc-header-missing">[header artwork missing: ${escapeHtml(header.image)}]</div>`
+      : `<img class="doc-header-img" src="${escapeHtml(header.image)}" alt="${escapeHtml(header.alt ?? "Header")}" />`
     : "";
   const watermarkImg = watermark.image
-    ? `<img class="watermark-img" src="${escapeHtml(watermark.image)}" alt="${escapeHtml(watermark.alt ?? "Watermark")}" onerror="this.remove()" />`
+    ? watermarkMissing
+      ? ""
+      : `<img class="watermark-img" src="${escapeHtml(watermark.image)}" alt="${escapeHtml(watermark.alt ?? "Watermark")}" />`
     : `<div class="watermark-missing">[watermark artwork missing]</div>`;
 
   const expNo = content.experimentNumber ? `Experiment No. ${escapeHtml(content.experimentNumber)}` : "";
@@ -138,7 +153,7 @@ export function renderHtml(content, template, options = {}) {
   <div class="page-frame"></div>
   <div class="doc-header">${headerImg}</div>
   <div class="watermark">${watermarkImg}</div>
-  <div class="doc-footer">${escapeHtml(footer.text ?? "")}${footer.showPageNumber ? ' &nbsp;|&nbsp; Page <span class="pagenum"></span>' : ""}</div>
+  <div class="doc-footer">${footerHtml}</div>
   <main>
     <h1>${escapeHtml(content.title)}</h1>
     ${expNo ? `<div class="exp-no">${expNo}</div>` : ""}

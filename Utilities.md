@@ -18,7 +18,7 @@
 | Package | Purpose |
 |---|---|
 | `express` | HTTP server + routing |
-| `cors` | Cross-origin access (Vite `:5173` → API `:4000` locally; `marklyai.vercel.app` → API in prod — currently `*`) |
+| `cors` | Cross-origin access (Vite `:5173` → API `:4000` locally; `marklyai.vercel.app` → API in prod — locked to the `ALLOWED_ORIGINS` allowlist; empty list = reflect any origin) |
 | `dotenv` | `.env` loading |
 | `mongoose` | Optional Mongo persistence (works without it) |
 | `zod` | Input + Assignment JSON + section validation |

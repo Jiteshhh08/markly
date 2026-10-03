@@ -32,12 +32,17 @@ a local MongoDB (Atlas replaces it), Redis (jobs run in-process).
 ### 2.1 Frontend — Vercel
 
 - URL: `https://marklyai.vercel.app`
-- Build-time variable (required — baked into the JS bundle at build time):
-  `VITE_API_URL=https://13-234-227-216.nip.io` (no trailing slash).
-- ⚠️ If this variable is missing at build time, the bundle falls back to
-  `http://127.0.0.1:4000` and the site talks to the visitor's own machine
-  (broken). After changing the variable you must **Redeploy with build cache
-  OFF**, otherwise the old bundle (old URL) is served.
+- Build-time variable (baked into the JS bundle at build time):
+  `VITE_API_URL=` — **explicitly empty = same-origin**. The browser calls
+  `/api/…` and `/assets/…` on `marklyai.vercel.app`; `vercel.json` rewrites
+  **both** paths to the API on EC2 (session cookie stays first-party).
+- Alternative (split hosting): set an absolute URL instead,
+  `VITE_API_URL=https://13-234-227-216.nip.io` (no trailing slash), and the
+  page calls the API directly (cookie becomes cross-site → `COOKIE_SECURE=1`).
+- ⚠️ The variable must **exist** (empty or absolute). If it is missing
+  entirely, the bundle falls back to `http://127.0.0.1:4000` and the site
+  talks to the visitor's own machine (broken). After changing the variable you
+  must **Redeploy with build cache OFF**, otherwise the old bundle is served.
 
 ### 2.2 Backend — AWS EC2
 
@@ -179,9 +184,14 @@ curl -s -o /dev/null -w '%{http_code}\n' https://13-234-227-216.nip.io/api/v1/as
 
 ### 4.5 Point Vercel at it
 
-Vercel project → Settings → Environment Variables → add
-`VITE_API_URL=https://13-234-227-216.nip.io` (all environments) →
-Deployments → Redeploy with **build cache OFF**.
+- Rewrites (committed in `vercel.json`, redeploys with the site):
+  `/api/:path*` → `http://13.234.227.216/api/:path*` **and**
+  `/assets/:path*` → `http://13.234.227.216/assets/:path*` (the second one
+  serves the header/watermark artwork the preview document references —
+  without it they 404 as `marklyai.vercel.app/assets/…`).
+- Env var (Settings → Environment Variables): `VITE_API_URL` left **empty**
+  (same-origin through the rewrites above; see §2.1) →
+  Deployments → Redeploy with **build cache OFF**.
 
 ### 4.6 Deploying a code change later
 
@@ -207,7 +217,7 @@ Deployments → Redeploy with **build cache OFF**.
 | Public HTTPS | `https://13-234-227-216.nip.io/…` → 401 `{"error":"Authentication required"}` (TLS trusted, proxy correct) |
 | Error hygiene | Malformed JSON → `400 {"error":"Something went wrong…"}` (was: HTML stack page); error bodies carry only `error`, never `details`/`log` |
 | Session cookies | `Set-Cookie: markly_token=…; HttpOnly; Secure; SameSite=None`; cookie-only `/auth/me` restores session (refresh-proof); logout stays logged out |
-| Tests | API suite **55/55 pass**; jsdom App E2E 18/18; persistence across restart verified |
+| Tests | API suite **116/116 pass** (30 suites); persistence across restart verified |
 | Local machine | idle — no node/python/docker processes, WSL stopped, dev ports free |
 
 ---

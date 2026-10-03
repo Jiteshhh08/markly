@@ -2,7 +2,7 @@
   "$comment": "TENANT DATA, not application logic. Add more tenants/departments here (Phase 8 adds CRUD + versioning UI).",
   "tenant": {
     "id": "tcet",
-    "name": "Thakur College of Engineering & Technology",
+    "name": "",
     "slug": "tcet"
   },
   "department": {
@@ -41,7 +41,7 @@
       "everyPage": true
     },
     "footer": {
-      "text": "Thakur College of Engineering & Technology — Department of Computer Engineering",
+      "text": "",
       "showPageNumber": true
     },
     "facultyTable": {
