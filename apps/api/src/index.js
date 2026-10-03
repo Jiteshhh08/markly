@@ -21,9 +21,28 @@ process.on("unhandledRejection", (err) => {
 
 const app = express();
 app.use(helmet({ crossOriginResourcePolicy: false }));
-// credentials:true + reflected origin: lets the httpOnly session cookie ride
-// along (required cross-site, harmless same-origin). Never use "*" with credentials.
-app.use(cors({ origin: true, credentials: true }));
+// credentials:true + origin policy: ALLOWED_ORIGINS (comma-separated) locks
+// the API to known frontends. Unset = reflect any origin (local-dev default;
+// the httpOnly session cookie still only goes to callers the browser trusts).
+// Evaluated per request so tests and zero-downtime env changes apply live.
+function corsAllowList() {
+  return String(process.env.ALLOWED_ORIGINS ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+app.use(
+  cors({
+    origin: (origin, cb) => {
+      const allow = corsAllowList();
+      if (allow.length === 0) return cb(null, true);
+      if (!origin) return cb(null, true); // same-origin / non-browser (curl, health checks)
+      return allow.includes(origin) ? cb(null, true) : cb(null, false);
+    },
+    credentials: true,
+  }),
+);
 app.use(express.json({ limit: "1mb" }));
 
 // Minimal request logging (Phase 9 observability baseline).
@@ -85,6 +104,12 @@ app.use((err, _req, res, _next) => {
 const PORT = Number(process.env.PORT ?? 4000);
 
 async function main() {
+  if (process.env.AUTH_REQUIRED === "1" && corsAllowList().length === 0) {
+    console.warn(
+      "[api] AUTH_REQUIRED=1 but ALLOWED_ORIGINS is unset — CORS reflects any origin. " +
+        "Set ALLOWED_ORIGINS=https://your-frontend in production.",
+    );
+  }
   if (process.env.MONGODB_URI) {
     try {
       await mongoose.connect(process.env.MONGODB_URI);

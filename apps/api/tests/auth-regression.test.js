@@ -35,7 +35,16 @@ before(async () => {
   base = `http://127.0.0.1:${server.address().port}`;
 });
 
-after(() => new Promise((resolve) => server.close(resolve)));
+// closeAllConnections first: bare server.close() waits out keep-alive sockets
+// and the runner can linger with no output (looks hung although green).
+after(async () => {
+  if (server) {
+    try {
+      server.closeAllConnections?.();
+    } catch { /* older node: fall through to close */ }
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
 
 function uniq(prefix) {
   return `${prefix}${Date.now()}${Math.floor(Math.random() * 1e6)}@example.com`;
@@ -43,10 +52,11 @@ function uniq(prefix) {
 
 // Raw fetch helper that can send Cookie and/or Authorization independently,
 // and captures Set-Cookie (node fetch exposes getSetCookie()).
-async function raw(method, path, { body, cookie, auth } = {}) {
+async function raw(method, path, { body, cookie, auth, origin } = {}) {
   const headers = { "content-type": "application/json" };
   if (cookie) headers.cookie = cookie;
   if (auth) headers.authorization = auth;
+  if (origin) headers.origin = origin;
   const res = await fetch(`${base}${path}`, {
     method,
     headers,
@@ -195,6 +205,40 @@ describe("STAGE2 auth regression (backend slice)", () => {
     assert.equal(res.status, 202, `authed job enqueue must succeed, got ${res.status}`);
   });
 
+  it("GET /jobs lists mine, hides other users' jobs, and rejects anonymous callers", async () => {
+    const regA = await raw("POST", "/api/v1/auth/register", {
+      body: { email: uniq("jobs-A-"), password: "supersecret1" },
+    });
+    const regB = await raw("POST", "/api/v1/auth/register", {
+      body: { email: uniq("jobs-B-"), password: "supersecret1" },
+    });
+    assert.equal(regA.status, 201);
+    assert.equal(regB.status, 201);
+    const cookieA = sessionCookie(regA.setCookies);
+    const cookieB = sessionCookie(regB.setCookies);
+
+    const anon = await raw("GET", "/api/v1/jobs");
+    assert.equal(anon.status, 401, "anonymous job listing must be rejected");
+
+    const created = await raw("POST", "/api/v1/jobs", {
+      body: { type: "generate", input: { aim: "Explore subqueries in SQL" } },
+      cookie: cookieA,
+    });
+    assert.equal(created.status, 202);
+    const jobId = created.data.job.id;
+
+    const listA = await raw("GET", "/api/v1/jobs", { cookie: cookieA });
+    assert.equal(listA.status, 200);
+    assert.ok(listA.data.jobs.some((j) => j.id === jobId), "owner must see own job");
+    // Boot resume depends on the job input (aim/subject for the local card).
+    const listed = listA.data.jobs.find((j) => j.id === jobId);
+    assert.equal(listed.input?.aim, "Explore subqueries in SQL");
+
+    const listB = await raw("GET", "/api/v1/jobs", { cookie: cookieB });
+    assert.equal(listB.status, 200);
+    assert.ok(!listB.data.jobs.some((j) => j.id === jobId), "other users must not see the job");
+  });
+
   it("expired/invalid token → 401 (genuine auth failure DOES transition)", async () => {
     const bad = await raw("GET", "/api/v1/auth/me", { auth: "Bearer not.a.token" });
     assert.equal(bad.status, 401);
@@ -202,5 +246,99 @@ describe("STAGE2 auth regression (backend slice)", () => {
     // Under AUTH_REQUIRED=1 there is no cookie and no Bearer → /me still 401
     // (/me always requires req.user, independent of the flag).
     assert.equal(none.status, 401);
+  });
+});
+
+describe("production cookie contract (COOKIE_SECURE=1 → SameSite=None; Secure)", () => {
+  it("sets and clears a cross-site-capable session cookie", async () => {
+    const prev = process.env.COOKIE_SECURE;
+    process.env.COOKIE_SECURE = "1";
+    try {
+      const reg = await raw("POST", "/api/v1/auth/register", {
+        body: { email: uniq("prod-cookie-"), password: "supersecret1" },
+      });
+      assert.equal(reg.status, 201);
+      const set = reg.setCookies.find((c) => c.startsWith("markly_token="));
+      assert.ok(set, "expected a markly_token Set-Cookie");
+      for (const attr of ["HttpOnly", "Path=/", "SameSite=None", "Secure"]) {
+        assert.ok(
+          set.includes(attr),
+          `production cookie must carry ${attr} (got: ${set.slice(0, 120)}…)`,
+        );
+      }
+      const out = await raw("POST", "/api/v1/auth/logout", {
+        cookie: set.split(";")[0],
+      });
+      assert.equal(out.status, 200);
+      const cleared = out.setCookies.find((c) => c.startsWith("markly_token="));
+      assert.ok(cleared && /expires=thu, 01 jan 1970/i.test(cleared), "logout must expire the cookie");
+      assert.ok(cleared.includes("SameSite=None") && cleared.includes("Secure"), "clear must mirror set attributes");
+    } finally {
+      if (prev === undefined) delete process.env.COOKIE_SECURE;
+      else process.env.COOKIE_SECURE = prev;
+    }
+  });
+
+  it("defaults to SameSite=Lax without Secure in development", async () => {
+    const prev = process.env.COOKIE_SECURE;
+    delete process.env.COOKIE_SECURE;
+    try {
+      const reg = await raw("POST", "/api/v1/auth/register", {
+        body: { email: uniq("dev-cookie-"), password: "supersecret1" },
+      });
+      assert.equal(reg.status, 201);
+      const set = reg.setCookies.find((c) => c.startsWith("markly_token="));
+      assert.ok(set && /samesite=lax/i.test(set), "dev cookie must be SameSite=Lax");
+      assert.ok(!/(?:^|;\s*)secure(?:;|$)/i.test(set), "dev cookie must not be Secure");
+    } finally {
+      if (prev === undefined) delete process.env.COOKIE_SECURE;
+      else process.env.COOKIE_SECURE = prev;
+    }
+  });
+});
+
+describe("CORS origin policy (ALLOWED_ORIGINS allowlist)", () => {
+  async function preflight(origin) {
+    const res = await fetch(`${base}/api/v1/assignments`, {
+      method: "OPTIONS",
+      headers: {
+        origin,
+        "access-control-request-method": "GET",
+        "access-control-request-headers": "content-type",
+      },
+    });
+    return {
+      status: res.status,
+      allowOrigin: res.headers.get("access-control-allow-origin"),
+      allowCreds: res.headers.get("access-control-allow-credentials"),
+    };
+  }
+
+  it("reflects any origin when no allowlist is configured (dev default)", async () => {
+    const prev = process.env.ALLOWED_ORIGINS;
+    delete process.env.ALLOWED_ORIGINS;
+    try {
+      const r = await preflight("http://localhost:5173");
+      assert.equal(r.allowOrigin, "http://localhost:5173");
+      assert.equal(r.allowCreds, "true");
+    } finally {
+      if (prev === undefined) delete process.env.ALLOWED_ORIGINS;
+      else process.env.ALLOWED_ORIGINS = prev;
+    }
+  });
+
+  it("restricts to the allowlist when configured, without breaking credentialed flows", async () => {
+    const prev = process.env.ALLOWED_ORIGINS;
+    process.env.ALLOWED_ORIGINS = "https://marklyai.vercel.app";
+    try {
+      const ok = await preflight("https://marklyai.vercel.app");
+      assert.equal(ok.allowOrigin, "https://marklyai.vercel.app");
+      assert.equal(ok.allowCreds, "true");
+      const evil = await preflight("https://evil.example");
+      assert.equal(evil.allowOrigin, null, "unlisted origins must get no ACAO header");
+    } finally {
+      if (prev === undefined) delete process.env.ALLOWED_ORIGINS;
+      else process.env.ALLOWED_ORIGINS = prev;
+    }
   });
 });
