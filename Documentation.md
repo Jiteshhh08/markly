@@ -26,7 +26,7 @@ React (:5173)
 
 | Path | Purpose |
 |---|---|
-| `src/` | Frontend: `App.jsx` workspace board + `contexts/` (AuthContext) + `services/api.js` (canonical client) + `features/auth/` + `components/` |
+| `src/` | Frontend: `App.jsx` shell (state + composition) + `views/` (4 screens) + `features/assignments/` (data, row/card UI, drawer, create modal) + `features/auth/` + `contexts/` (AuthContext) + `services/api.js` (canonical client) + `components/` |
 | `apps/api/src/index.js` | Express entry: helmet, CORS, logging, auth attach, static `/assets`, rate limit, route mounts, optional Mongo |
 | `apps/api/src/routes/` | `assignments.js` (generate/get/list/html/regen/PUT/docx/latex/pdf), `templates.js` (CRUD + from-pdf), `examples.js` (ingest proxy), `jobs.js`, `auth.js`, `health.js` |
 | `apps/api/src/lib/` | `aiClient.js` (AI calls), `subjects.js` (profiles), `templates.js` (seed loader), `templateStore.js` (versioning), `assignmentStore.js` (records), `queue.js` (jobs), `auth.js` (JWT), `storage.js` (files), `compile.js` (PDF) |
