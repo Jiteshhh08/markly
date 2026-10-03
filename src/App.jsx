@@ -10,11 +10,16 @@ import {
   PageHeader,
   SearchBar,
   StatusBadge,
+  cx,
   inputCls,
 } from './components/ui.jsx'
+import { Icon, LogoMark, Spinner } from './components/icons.jsx'
 
 import { useAuth } from './contexts/AuthContext.jsx'
 import { API_BASE, apiFetch, authHeaders } from './services/api.js'
+import { firstNameOf } from './features/auth/identity.js'
+import { LoginModal } from './features/auth/LoginModal.jsx'
+import { ProfileMenu, ProfileModal } from './features/auth/ProfileMenu.jsx'
 
 // Server record -> assignment (keyed by record id so reloads stay consistent).
 function recordToIssue(record) {
@@ -74,10 +79,6 @@ function sectionFromText(section, text) {
 
 /* --------------------------------- helpers -------------------------------- */
 
-function cx(...parts) {
-  return parts.filter(Boolean).join(' ')
-}
-
 function timeAgo(iso) {
   const t = new Date(iso ?? '').getTime()
   if (!Number.isFinite(t)) return '—'
@@ -97,33 +98,6 @@ function fullDate(iso) {
 
 function subjectStyle(subject) {
   return SUBJECT_META[subject] ?? { color: '#35413F', bg: '#EFECE3' }
-}
-
-/* --------------------------- identity + greeting -------------------------- */
-// Session shape: { email, name, avatarUrl, id } — name/avatar come from the
-// authenticated profile (GET /api/v1/auth/me, enriched server-side from the
-// same store register/login use). Nothing is hardcoded; when the provider
-// has no name, the email local-part is prettified as a last resort.
-
-function displayNameOf(session) {
-  const n = (session?.name ?? '').trim()
-  if (n) return n
-  const local = (session?.email ?? '').split('@')[0] ?? ''
-  const words = local.split(/[._\-+]+/).filter(Boolean)
-  if (words.length === 0) return session?.email ? session.email : 'Student'
-  return words.map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')
-}
-
-function firstNameOf(session) {
-  return displayNameOf(session).split(/\s+/)[0] ?? 'there'
-}
-
-function initialsOf(name, email) {
-  const parts = (name ?? '').trim().split(/\s+/).filter(Boolean)
-  if (parts.length >= 2) return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase()
-  if (parts.length === 1 && parts[0][0]) return parts[0][0].toUpperCase()
-  const c = (email ?? '').trim().charAt(0)
-  return (c || 'S').toUpperCase()
 }
 
 const loginMessages = [
@@ -151,146 +125,6 @@ function priorityOf(difficulty) {
   return { label: 'Medium', color: '#1A4543', glyph: '＝' }
 }
 
-/* ---------------------------------- icons --------------------------------- */
-
-const PATHS = {
-  plus: <path d="M12 5v14M5 12h14" />,
-  x: <path d="M6 6l12 12M18 6 6 18" />,
-  check: <path d="m4.5 12.5 5 5 10-11" />,
-  refresh: (
-    <>
-      <path d="M20 12a8 8 0 1 1-2.3-5.6" />
-      <path d="M20 3v4h-4" />
-    </>
-  ),
-  trash: (
-    <>
-      <path d="M4 7h16" />
-      <path d="M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
-      <path d="M6 7l1 13a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-13" />
-    </>
-  ),
-  download: (
-    <>
-      <path d="M12 3v12" />
-      <path d="m7 10 5 5 5-5" />
-      <path d="M4 21h16" />
-    </>
-  ),
-  external: (
-    <>
-      <path d="M14 4h6v6" />
-      <path d="M20 4 11 13" />
-      <path d="M19 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h6" />
-    </>
-  ),
-  copy: (
-    <>
-      <rect x="9" y="9" width="12" height="12" rx="2" />
-      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-    </>
-  ),
-  file: (
-    <>
-      <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8Z" />
-      <path d="M14 3v5h5" />
-      <path d="M9 13h6M9 17h6" />
-    </>
-  ),
-  list: (
-    <>
-      <path d="M8 6h13M8 12h13M8 18h13" />
-      <path d="M3.5 6h.01M3.5 12h.01M3.5 18h.01" />
-    </>
-  ),
-  send: (
-    <>
-      <path d="m21 3-9.5 9.5" />
-      <path d="M21 3 14 21l-3.5-7.5L3 10Z" />
-    </>
-  ),
-  flask: (
-    <>
-      <path d="M9 3h6" />
-      <path d="M10 3v6L4.5 19a2 2 0 0 0 1.8 3h11.4a2 2 0 0 0 1.8-3L14 9V3" />
-      <path d="M7.5 15h9" />
-    </>
-  ),
-  book: (
-    <>
-      <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20V3H6.5A2.5 2.5 0 0 0 4 5.5Z" />
-      <path d="M4 19.5A2.5 2.5 0 0 0 6.5 22H20v-5" />
-    </>
-  ),
-  clock: (
-    <>
-      <circle cx="12" cy="12" r="8.5" />
-      <path d="M12 7.5V12l3 2" />
-    </>
-  ),
-  grid: (
-    <>
-      <rect x="3.5" y="3.5" width="7" height="7" rx="1.5" />
-      <rect x="13.5" y="3.5" width="7" height="7" rx="1.5" />
-      <rect x="3.5" y="13.5" width="7" height="7" rx="1.5" />
-      <rect x="13.5" y="13.5" width="7" height="7" rx="1.5" />
-    </>
-  ),
-  user: (
-    <>
-      <circle cx="12" cy="8" r="3.5" />
-      <path d="M5 20a7 7 0 0 1 14 0" />
-    </>
-  ),
-  upload: (
-    <>
-      <path d="M12 15V3" />
-      <path d="m7 8 5-5 5 5" />
-      <path d="M4 21h16" />
-    </>
-  ),
-  home: (
-    <>
-      <path d="m4 11 8-7 8 7" />
-      <path d="M6 9.5V20a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V9.5" />
-    </>
-  ),
-  archive: (
-    <>
-      <rect x="3" y="4" width="18" height="5" rx="1" />
-      <path d="M5 9v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V9" />
-      <path d="M10 13h4" />
-    </>
-  ),
-  chevron: <path d="m9 6 6 6-6 6" />,
-  logout: (
-    <>
-      <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
-      <path d="m16 17 5-5-5-5" />
-      <path d="M21 12H9" />
-    </>
-  ),
-  dot: <circle cx="12" cy="12" r="4" />,
-}
-
-function Icon({ name, className = 'h-4 w-4' }) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" className={className} aria-hidden="true">
-      {PATHS[name] ?? PATHS.dot}
-    </svg>
-  )
-}
-
-function LogoMark({ className = 'h-8 w-8' }) {
-  return (
-    <svg viewBox="0 0 32 32" className={className} aria-hidden="true">
-      <rect x="1" y="1" width="30" height="30" rx="8" fill="#1A4543" />
-      <path d="M8 23.5v-12l7.5 7 7.5-7v12" fill="none" stroke="#fff" strokeWidth="3.2" strokeLinecap="round" strokeLinejoin="round" />
-      <circle cx="25" cy="8" r="2" fill="#F0BE6F" />
-    </svg>
-  )
-}
-
 function Avatar({ subject, className = 'h-6 w-6 text-[10px]' }) {
   const s = subjectStyle(subject)
   const initials = subject.split(/[\s/]+/).map((w) => w[0]).join('').slice(0, 2).toUpperCase()
@@ -301,176 +135,8 @@ function Avatar({ subject, className = 'h-6 w-6 text-[10px]' }) {
   )
 }
 
-function Spinner({ className = 'h-4 w-4' }) {
-  return (
-    <svg viewBox="0 0 24 24" className={cx('animate-spin', className)} aria-hidden="true">
-      <circle cx="12" cy="12" r="9" fill="none" stroke="#E4DFD3" strokeWidth="3" />
-      <path d="M21 12a9 9 0 0 0-9-9" fill="none" stroke="#1A4543" strokeWidth="3" strokeLinecap="round" />
-    </svg>
-  )
-}
-
 /* ------------------------- authenticated identity ------------------------ */
-
-function UserAvatar({ user, className = 'h-9 w-9 text-[12px]' }) {
-  // Remembers the URL that failed so a broken image falls back to initials;
-  // any new URL is retried automatically (no effect needed).
-  const [failedUrl, setFailedUrl] = useState('')
-  const name = displayNameOf(user)
-  const url = (user?.avatarUrl ?? '').trim()
-  if (url && url !== failedUrl) {
-    return (
-      <img
-        src={url}
-        alt={`${name}'s profile photo`}
-        onError={() => setFailedUrl(url)}
-        className={cx('shrink-0 rounded-full bg-pine-900 object-cover', className)}
-      />
-    )
-  }
-  return (
-    <span
-      role="img"
-      aria-label={`${name}'s profile avatar`}
-      className={cx('inline-flex shrink-0 items-center justify-center rounded-full bg-pine-900 font-bold text-white', className)}
-    >
-      {initialsOf(name, user?.email)}
-    </span>
-  )
-}
-
-function ProfileMenu({ session, onLogout, onOpenProfile, direction = 'up', compact = false }) {
-  const [open, setOpen] = useState(false)
-  const [busy, setBusy] = useState(false)
-  const wrapRef = useRef(null)
-  const name = displayNameOf(session)
-
-  useEffect(() => {
-    if (!open) return undefined
-    function onKey(e) {
-      if (e.key === 'Escape') setOpen(false)
-    }
-    function onPointer(e) {
-      if (wrapRef.current && !wrapRef.current.contains(e.target)) setOpen(false)
-    }
-    document.addEventListener('keydown', onKey)
-    document.addEventListener('mousedown', onPointer)
-    return () => {
-      document.removeEventListener('keydown', onKey)
-      document.removeEventListener('mousedown', onPointer)
-    }
-  }, [open ])
-
-  async function doLogout() {
-    if (busy) return
-    setBusy(true)
-    try {
-      await onLogout()
-    } finally {
-      setBusy(false)
-      setOpen(false)
-    }
-  }
-
-  return (
-    <div ref={wrapRef} className="relative">
-      <button
-        onClick={() => setOpen((v) => !v)}
-        aria-haspopup="menu"
-        aria-expanded={open}
-        aria-label={compact ? `${name} — open profile menu` : undefined}
-        title={compact ? name : undefined}
-        className={cx(
-          'flex items-center gap-2.5 rounded-xl text-left transition-all duration-150 hover:border-ink-300 hover:bg-rail active:bg-rail-hover cursor-pointer',
-          compact ? 'rounded-full p-0.5 hover:bg-rail' : 'w-full border border-transparent px-2 py-1.5 hover:border-line',
-        )}
-      >
-        <UserAvatar user={session} className={compact ? 'h-9 w-9 text-[12px]' : 'h-10 w-10 text-[13px]'} />
-        {!compact && (
-          <span className="min-w-0 flex-1">
-            <span className="block truncate text-[13px] font-bold leading-tight text-ink-900">{name}</span>
-            <span className="block truncate text-[11.5px] text-ink-400">{session?.email}</span>
-          </span>
-        )}
-        {!compact && (
-          <Icon name="chevron" className={cx('h-3.5 w-3.5 shrink-0 rotate-[-90deg] text-ink-300 transition-transform duration-150', open && 'rotate-90')} />
-        )}
-      </button>
-
-      {open && (
-        <div
-          role="menu"
-          aria-label="Profile menu"
-          className={cx(
-            'mk-pop absolute z-50 w-60 overflow-hidden rounded-xl border border-line bg-white shadow-[0_12px_32px_rgba(15,46,45,0.22)]',
-            direction === 'up' ? 'bottom-full left-0 mb-2' : 'right-0 top-full mt-2',
-          )}
-        >
-          <div className="flex items-center gap-2.5 border-b border-line-soft bg-paper px-3.5 py-3">
-            <UserAvatar user={session} className="h-9 w-9 text-[12px]" />
-            <div className="min-w-0">
-              <p className="truncate text-[13.5px] font-bold text-ink-900">{name}</p>
-              <p className="truncate text-[12px] text-ink-400">{session?.email}</p>
-            </div>
-          </div>
-          <div className="p-1.5">
-            <button
-              role="menuitem"
-              onClick={() => { setOpen(false); onOpenProfile?.() }}
-              className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-[13px] font-semibold text-ink-700 transition-colors duration-150 hover:bg-rail"
-            >
-              <Icon name="user" className="h-4 w-4 text-ink-400" />
-              Profile
-            </button>
-            <button
-              role="menuitem"
-              onClick={doLogout}
-              disabled={busy}
-              aria-label="Log out"
-              className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-[13px] font-semibold text-[#8F1D17] transition-colors duration-150 hover:bg-[#FDECEC] disabled:opacity-60"
-            >
-              {busy ? <Spinner className="h-4 w-4" /> : <Icon name="logout" className="h-4 w-4" />}
-              {busy ? 'Logging out…' : 'Log out'}
-            </button>
-          </div>
-        </div>
-      )}
-    </div>
-  )
-}
-
-function ProfileModal({ session, onClose }) {
-  const name = displayNameOf(session)
-  return (
-    <ModalShell title="Your profile" subtitle="Identity from your Markly sign-in." onClose={onClose}>
-      <div className="flex items-center gap-3.5">
-        <UserAvatar user={session} className="h-16 w-16 text-[20px]" />
-        <div className="min-w-0">
-          <p className="truncate text-[17px] font-bold tracking-tight text-ink-900">{name}</p>
-          <p className="truncate text-[13px] text-ink-500">{session?.email}</p>
-          <span className="mt-1.5 inline-flex items-center gap-1.5 rounded-md bg-sage-100 px-2 py-0.5 text-[11px] font-bold text-sage-700 ring-1 ring-inset ring-sage-300/60">
-            <span className="h-1.5 w-1.5 rounded-full bg-sage-500" />
-            Signed in
-          </span>
-        </div>
-      </div>
-      <dl className="mt-4 grid grid-cols-1 gap-2.5 sm:grid-cols-2">
-        <div className="rounded-lg bg-paper px-3 py-2.5 ring-1 ring-inset ring-line-soft">
-          <dt className="text-[11px] font-bold uppercase tracking-[0.06em] text-ink-300">Name</dt>
-          <dd className="mt-0.5 truncate text-[13.5px] font-semibold text-ink-900">{name}</dd>
-        </div>
-        <div className="rounded-lg bg-paper px-3 py-2.5 ring-1 ring-inset ring-line-soft">
-          <dt className="text-[11px] font-bold uppercase tracking-[0.06em] text-ink-300">Email</dt>
-          <dd className="mt-0.5 truncate text-[13.5px] font-semibold text-ink-900">{session?.email ?? '—'}</dd>
-        </div>
-        <div className="rounded-lg bg-paper px-3 py-2.5 ring-1 ring-inset ring-line-soft sm:col-span-2">
-          <dt className="text-[11px] font-bold uppercase tracking-[0.06em] text-ink-300">User ID</dt>
-          <dd className="mt-0.5 truncate text-[12.5px] font-semibold text-ink-700">{session?.id || '—'}</dd>
-        </div>
-      </dl>
-    </ModalShell>
-  )
-}
+/* (UserAvatar, ProfileMenu, ProfileModal live in src/features/auth/.) */
 
 /* ------------------------------ shared bits -------------------------------- */
 
@@ -2396,71 +2062,6 @@ function DetailDrawer({ issue, shown, onClose, onRetry, onDelete, onDownload, on
         </div>
       </aside>
     </>
-  )
-}
-
-/* ------------------------------- login modal ------------------------------ */
-
-function LoginModal({ onClose, onSuccess }) {
-  const auth = useAuth()
-  const [mode, setMode] = useState('login')
-  const [email, setEmail] = useState('')
-  const [password, setPassword] = useState('')
-  const [name, setName] = useState('')
-  const [error, setError] = useState('')
-  const [busy, setBusy] = useState(false)
-
-  async function submit(e) {
-    e.preventDefault()
-    setBusy(true)
-    setError('')
-    try {
-      // AuthContext owns the whole flow: server call, Bearer store, cookie
-      // session, and the authoritative /me profile. No token plumbing here.
-      const user =
-        mode === 'register'
-          ? await auth.register({ email, password, name })
-          : await auth.login({ email, password })
-      onSuccess(user)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  return (
-    <ModalShell
-      title={mode === 'login' ? 'Welcome back' : 'Create your account'}
-      subtitle={mode === 'login' ? 'Log in to generate and manage practicals.' : 'One account for all your practicals and templates.'}
-      onClose={onClose}
-      footer={
-        <div className="flex items-center justify-between gap-2">
-          <button type="button" onClick={() => { setMode(mode === 'login' ? 'register' : 'login'); setError('') }} className="text-[13px] font-semibold text-pine-800 hover:underline">
-            {mode === 'login' ? 'Need an account? Register' : 'Have an account? Log in'}
-          </button>
-          <Button onClick={() => document.getElementById('login-form')?.requestSubmit()} disabled={busy}>
-            {busy ? 'Working…' : mode === 'login' ? 'Log in' : 'Register'}
-          </Button>
-        </div>
-      }
-    >
-      <form id="login-form" onSubmit={submit} className="flex flex-col gap-3">
-        {mode === 'register' && (
-          <Field label="Name">
-            <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Your name" className={inputCls} autoComplete="name" />
-          </Field>
-        )}
-        <Field label="Email">
-          <input type="email" required value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@college.edu" className={inputCls} autoComplete="email" />
-        </Field>
-        <Field label="Password" hint="Minimum 8 characters.">
-          <input type="password" required minLength={8} value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••••••" className={inputCls} autoComplete={mode === 'login' ? 'current-password' : 'new-password'} />
-        </Field>
-        {error && <p className="rounded-lg bg-[#FDECEC] px-3 py-2 text-[13px] font-medium text-[#8F1D17]">{error}</p>}
-        <button type="submit" className="hidden" aria-hidden="true" tabIndex={-1}>submit</button>
-      </form>
-    </ModalShell>
   )
 }
 

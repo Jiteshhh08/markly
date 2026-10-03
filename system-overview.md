@@ -95,9 +95,9 @@ fresh — but existing cookie sessions survive restarts (stateless JWT, 7d).
 | API routes / validation | `apps/api/src/routes/*.js`, `src/schemas.js` |
 | Auth rules + session cookie | `apps/api/src/routes/auth.js`, `lib/auth.js`, `AUTH_REQUIRED`, `COOKIE_SECURE` |
 | Error contract (generic client messages) | `apps/api/src/lib/errors.js`, final middleware in `src/index.js` |
-| Friendly transport errors (offline/timeout) | `apiFetch` in `src/App.jsx` (single choke point) |
+| Friendly transport errors (offline/timeout) | `apiFetch` in `src/services/api.js` (single choke point) |
 | Empty-board hero + dashboard link | `EmptyState` in `src/App.jsx` |
-| Timeouts (UI stalls) | `src/lib/api.js` (180s AbortSignal) |
+| Timeouts (UI stalls) | `src/services/api.js` (per-request timeout, 180s for generation) |
 
 ## 7. Environments compared
 

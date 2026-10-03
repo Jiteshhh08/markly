@@ -9,6 +9,11 @@ import { getDefaultTemplateDoc, getTemplateDoc } from "./templateStore.js";
 // otherwise an in-process queue. The jobs map below is the status source of truth either way
 // (multi-process BullMQ deployments should move status into Redis/Mongo).
 
+// Single BullMQ queue name shared by producer and worker. A previous
+// producer/worker mismatch silently wedged every BullMQ job as pending
+// forever — pinned by tests/queue-names.test.js.
+export const GENERATION_QUEUE = "Markly-generation";
+
 const jobs = new Map();
 let counter = 0;
 let bullmqQueue = null;
@@ -62,9 +67,11 @@ async function ensureBullmq() {
       maxRetriesPerRequest: 2,
       retryStrategy: (times) => Math.min(times * 500, 5000),
     };
-    bullmqQueue = new Queue("Markly-generation", { connection });
+    bullmqQueue = new Queue(GENERATION_QUEUE, { connection });
+    // STAGE 6: the worker MUST listen on the same queue the producer enqueues
+    // to (see GENERATION_QUEUE above). Dormant in the default memory mode.
     bullmqWorker = new Worker(
-      "assignmentai-generation",
+      GENERATION_QUEUE,
       async (bjob) => runGenerationJob(bjob.data.input, bjob.data.jobId, bjob.data.userId),
       { connection },
     );

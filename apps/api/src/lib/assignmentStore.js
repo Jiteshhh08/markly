@@ -136,10 +136,6 @@ export async function listRecordsFor(requesterId) {
   return [...seen.values()].sort(compareNewest);
 }
 
-export function listRecords() {
-  return [...store.values()].sort(compareNewest);
-}
-
 // Remove everywhere: memory, Mongo, and the generated PDF file (best-effort each).
 export async function deleteRecord(id) {
   store.delete(id);

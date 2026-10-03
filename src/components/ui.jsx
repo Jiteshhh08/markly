@@ -203,21 +203,6 @@ export function StatusBadge({ status }) {
   )
 }
 
-// Back-compat for legacy pages/
-export function ErrorText({ error }) {
-  if (!error) return null
-  return <p className="mt-2 text-[13px] text-[#8F1D17]">{String(error.message ?? error)}</p>
-}
-
-export function Card({ className = '', ...props }) {
-  return (
-    <div
-      className={cx('rounded-xl border border-line bg-white shadow-[0_1px_2px_rgba(30,42,40,0.06)]', className)}
-      {...props}
-    />
-  )
-}
-
 /* ------------------------- Empty / Loading / Error ---------------------- */
 
 export function EmptyState({
