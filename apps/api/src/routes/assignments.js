@@ -72,12 +72,17 @@ assignmentsRouter.post("/generate", async (req, res) => {
 });
 
 // Phase 9: generation history (durable + scoped to the requester).
+// Summaries carry enough for correct cards (title/aim/subject/tech/exp);
+// the drawer lazy-loads the full record (with content) on open.
 assignmentsRouter.get("/", async (_req, res) => {
   const items = (await listRecordsFor(ownerId(_req))).map((r) => ({
     id: r.id,
     status: r.status,
     title: r.content?.title,
     aim: r.content?.aim,
+    subject: r.input?.subject ?? "DBMS",
+    technology: r.input?.technology ?? "",
+    experimentNumber: r.content?.experimentNumber ?? null,
     template: r.template,
     createdAt: r.createdAt,
     updatedAt: r.updatedAt,

@@ -54,6 +54,19 @@ export function getJob(id) {
   return jobs.get(id) ?? null;
 }
 
+// Jobs visible to this requester (mirrors the GET /:id ownership rule:
+// anonymous jobs are shared, owned jobs are private). Lets a fresh page
+// resume polling generations that are still running after a refresh.
+export function listJobsFor(requesterId) {
+  const out = [];
+  for (const job of jobs.values()) {
+    if (job.userId && job.userId !== "anonymous" && job.userId !== (requesterId ?? "anonymous")) continue;
+    out.push(job);
+  }
+  out.sort((a, b) => String(b.createdAt ?? "").localeCompare(String(a.createdAt ?? "")));
+  return out;
+}
+
 async function ensureBullmq() {
   if (bullmqQueue || queueBackend() !== "bullmq") return bullmqQueue;
   try {
