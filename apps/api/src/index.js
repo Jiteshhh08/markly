@@ -9,7 +9,7 @@ import { examplesRouter } from "./routes/examples.js";
 import { healthRouter } from "./routes/health.js";
 import { jobsRouter } from "./routes/jobs.js";
 import { templatesRouter } from "./routes/templates.js";
-import { authAttach, requireAuthIfEnabled } from "./lib/auth.js";
+import { authAttach, hydrateUsersFromMongo, requireAuthIfEnabled } from "./lib/auth.js";
 import { assetsDir, ensureDirs } from "./lib/storage.js";
 
 dotenv.config();
@@ -55,10 +55,13 @@ app.use("/api/", (req, res, next) => {
 
 app.use("/api/v1/health", healthRouter);
 app.use("/api/v1/auth", authRouter);
+// STAGE 3: every user-owned / mutating resource honors AUTH_REQUIRED=1.
+// Previously only /assignments was guarded; /templates, /jobs and /examples
+// stayed open in production. /health intentionally stays public.
 app.use("/api/v1/assignments", requireAuthIfEnabled, assignmentsRouter);
-app.use("/api/v1/examples", examplesRouter);
-app.use("/api/v1/jobs", jobsRouter);
-app.use("/api/v1/templates", templatesRouter);
+app.use("/api/v1/examples", requireAuthIfEnabled, examplesRouter);
+app.use("/api/v1/jobs", requireAuthIfEnabled, jobsRouter);
+app.use("/api/v1/templates", requireAuthIfEnabled, templatesRouter);
 
 app.get("/", (_req, res) => {
   res.json({ service: "Markly-api", docs: "/api/v1/health" });
@@ -86,6 +89,10 @@ async function main() {
     try {
       await mongoose.connect(process.env.MONGODB_URI);
       console.log("[api] connected to MongoDB");
+      // STAGE 4: warm the auth Map so logins survive restarts. Pre-existing
+      // User docs without a passwordHash are skipped (re-registration needed).
+      const warmed = await hydrateUsersFromMongo();
+      console.log(`[api] rehydrated ${warmed} user(s) from MongoDB`);
     } catch (err) {
       console.warn("[api] MongoDB connection failed, continuing in-memory:", String(err));
     }

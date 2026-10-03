@@ -1,5 +1,5 @@
 import { assignmentContentSchema, generateInputSchema } from "../schemas.js";
-import { getRecord, nextAssignmentId, persistRecord, saveRecord } from "./assignmentStore.js";
+import { getRecord, nextAssignmentId, persistWithWarning, saveRecord } from "./assignmentStore.js";
 import { generateViaAiService } from "./aiClient.js";
 import { getSubjectProfile } from "./subjects.js";
 import { getDefaultTemplateDoc, getTemplateDoc } from "./templateStore.js";
@@ -161,7 +161,7 @@ export async function runGenerationJob(input, jobId, userId = "anonymous") {
       createdAt: new Date().toISOString(),
     };
     saveRecord(record);
-    void persistRecord(record);
+    await persistWithWarning(record, "job assignment");
     setStatus(job, "completed", { progress: 100, assignmentId: record.id });
     return record;
   } catch (err) {

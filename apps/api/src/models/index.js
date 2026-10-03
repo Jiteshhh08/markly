@@ -7,7 +7,15 @@ const { Schema, model } = mongoose;
 
 export const User = model(
   "User",
-  new Schema({ email: String, name: String, tenantIds: [String] }, { timestamps: true }),
+  // STAGE 4: id/passwordHash/avatarUrl are additive. Pre-existing User docs
+  // without a passwordHash cannot satisfy bcrypt login after a restart —
+  // those accounts must re-register (documented limitation, not a migration).
+  // No unique index is added here: failing boot on duplicate legacy emails
+  // would be worse than the application-level duplicate check in registerUser.
+  new Schema(
+    { id: String, email: String, name: String, passwordHash: String, avatarUrl: String, tenantIds: [String] },
+    { timestamps: true },
+  ),
 );
 
 export const Tenant = model(

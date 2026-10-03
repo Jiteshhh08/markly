@@ -3,7 +3,7 @@ import { SECTION_NAMES, assignmentContentSchema, generateInputSchema, sectionVal
 import { generateViaAiService, regenerateSectionViaAiService } from "../lib/aiClient.js";
 import { getSubjectProfile } from "../lib/subjects.js";
 import { getDefaultTemplateDoc, getTemplateDoc } from "../lib/templateStore.js";
-import { findRecord, listRecordsFor, nextAssignmentId, ownerId, persistRecord, saveRecord } from "../lib/assignmentStore.js";
+import { findRecord, listRecordsFor, nextAssignmentId, ownerId, persistWithWarning, saveRecord } from "../lib/assignmentStore.js";
 import { renderHtml } from "../render/html.js";
 import { sendError } from "../lib/errors.js";
 
@@ -60,8 +60,9 @@ assignmentsRouter.post("/generate", async (req, res) => {
       createdAt: new Date().toISOString(),
     };
     saveRecord(record);
-    // Durable per-user write (best-effort; memory remains the hot cache).
-    void persistRecord(record);
+    // Authoritative durable write (awaited): the response commits only after
+    // Mongo acknowledges it. Degraded mode is logged, never silent.
+    await persistWithWarning(record, "assignment");
 
     return res.json(record);
   } catch (err) {
@@ -128,6 +129,7 @@ assignmentsRouter.patch("/:id/options", async (req, res) => {
   };
   record.updatedAt = new Date().toISOString();
   saveRecord(record);
+  await persistWithWarning(record, "assignment options update");
   return res.json(record);
 });
 
@@ -158,7 +160,7 @@ assignmentsRouter.post("/:id/regenerate-section", async (req, res) => {
     record.content = { ...record.content, [section]: value.data };
     record.updatedAt = new Date().toISOString();
     saveRecord(record);
-    void persistRecord(record);
+    await persistWithWarning(record, "assignment section regeneration");
     return res.json(record);
   } catch (err) {
     console.error(`[api] section regeneration failed for ${record.id}:`, String(err));
@@ -178,6 +180,7 @@ assignmentsRouter.put("/:id", async (req, res) => {
   record.editedByUser = true;
   record.updatedAt = new Date().toISOString();
   saveRecord(record);
+  await persistWithWarning(record, "assignment content update");
   return res.json(record);
 });
 
@@ -218,6 +221,7 @@ assignmentsRouter.put("/:id/latex", async (req, res) => {
   record.latexOverride = latex;
   record.updatedAt = new Date().toISOString();
   saveRecord(record);
+  await persistWithWarning(record, "assignment latex update");
   return res.json({ ok: true });
 });
 

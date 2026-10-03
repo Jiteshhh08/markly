@@ -13,26 +13,8 @@ import {
   inputCls,
 } from './components/ui.jsx'
 
-const API_BASE = import.meta.env.VITE_API_URL ?? 'http://127.0.0.1:4000'
-
-// No browser storage anywhere in this app: board state lives in React state
-// (gone on reload), records live in MongoDB via the API, and the auth token
-// lives in memory (reloading logs you out — by design).
-let memoryToken = ''
-function authHeaders(extra = {}) {
-  return memoryToken ? { ...extra, Authorization: `Bearer ${memoryToken}` } : extra
-}
-
-// credentials:'include' lets the httpOnly session cookie ride along.
-// Transport failures surface here as friendly product copy.
-async function apiFetch(url, options = {}) {
-  try {
-    return await fetch(url, { credentials: 'include', ...options })
-  } catch (err) {
-    if (err?.name === 'AbortError') throw new Error('The request timed out. Please try again.')
-    throw new Error("Couldn't reach the Markly service. Check your connection and try again.")
-  }
-}
+import { useAuth } from './contexts/AuthContext.jsx'
+import { API_BASE, apiFetch, authHeaders } from './services/api.js'
 
 // Server record -> assignment (keyed by record id so reloads stay consistent).
 function recordToIssue(record) {
@@ -684,7 +666,10 @@ export default function App() {
   const [templates, setTemplates] = useState([])
   const [loginOpen, setLoginOpen] = useState(false)
   const [profileOpen, setProfileOpen] = useState(false)
-  const [session, setSession] = useState(null)
+  // Single source of truth for authentication: AuthContext owns user,
+  // status, login/logout and the /me bootstrap. This component only reads.
+  const auth = useAuth()
+  const session = auth.user
   // Selected once per visit (and re-picked on each fresh login) — never
   // re-rolled on re-render, so the line stays stable for the whole session.
   const [greeting, setGreeting] = useState(() => pickGreeting())
@@ -694,11 +679,6 @@ export default function App() {
   const [statusFilter, setStatusFilter] = useState('All statuses')
   const [sortBy, setSortBy] = useState('Recently updated')
   const toastId = useRef(0)
-
-  function saveSession(next) {
-    setSession(next)
-    memoryToken = next?.token ?? ''
-  }
 
   const pushToast = useCallback((kind, title, message) => {
     const id = ++toastId.current
@@ -711,11 +691,23 @@ export default function App() {
     pushToast('error', 'Login required', 'Please log in to continue — then retry the action.')
   }, [pushToast])
 
+  // Gate for user-initiated protected actions (Generate, exports, …).
+  // Reads AuthContext status — never a token field. Loading/error states
+  // refuse quietly WITHOUT opening the login modal: bootstrap is not
+  // logged-out, and connectivity failures are not auth failures.
   const ensureSession = useCallback(() => {
-    if (session?.token) return true
+    if (auth.status === 'authenticated') return true
+    if (auth.status === 'loading') {
+      pushToast('error', 'Still signing you in', 'Authentication is still loading — please try again in a moment.')
+      return false
+    }
+    if (auth.status === 'error') {
+      pushToast('error', "Couldn't reach the Markly service", 'Check your connection and try again.')
+      return false
+    }
     handleAuthRequired()
     return false
-  }, [handleAuthRequired, session])
+  }, [handleAuthRequired, pushToast, auth.status])
 
   // Must match .mk-drawer.mk-hide transition-duration in index.css.
   const DRAWER_CLOSE_MS = 240
@@ -765,13 +757,26 @@ export default function App() {
     }
   }, [])
 
+  // Service health is session-independent: always check once on mount.
   useEffect(() => {
     let alive = true
-    setBootLoading(true)
-    setBootError('')
     apiFetch(`${API_BASE}/api/v1/health`)
       .then((r) => { if (alive) setServiceUp(r.ok) })
       .catch(() => { if (alive) setServiceUp(false) })
+    return () => { alive = false }
+  }, [])
+
+  // Protected data fetching starts ONLY when auth state is known
+  // (AuthContext initialized). Nothing fires while status is loading, so a
+  // slow /me can never race into an empty board or a false logged-out view.
+  // Logged-out users still load shared records in open dev mode; under
+  // AUTH_REQUIRED=1 unauthenticated fetches 401 and stay empty. A 401 here
+  // reconciles AuthContext centrally via the apiFetch hook (no modal storm).
+  useEffect(() => {
+    if (!auth.initialized) return
+    let alive = true
+    setBootLoading(true)
+    setBootError('')
     apiFetch(`${API_BASE}/api/v1/templates`, { headers: authHeaders() })
       .then((r) => r.json())
       .then((d) => { if (alive) setTemplates(d.templates ?? []) })
@@ -788,31 +793,15 @@ export default function App() {
         setBootError(err instanceof Error ? err.message : String(err))
         setBootLoading(false)
       })
-    apiFetch(`${API_BASE}/api/v1/auth/me`)
-      .then((r) => (r.ok ? r.json() : null))
-      .then((d) => {
-        // Restored cookie session: identity comes from the authenticated
-        // profile (name/avatar resolved server-side), never local guesses.
-        if (alive && d?.user?.email) {
-          setSession({
-            email: d.user.email,
-            name: d.user.name ?? '',
-            avatarUrl: d.user.avatarUrl ?? '',
-            id: d.user.sub ?? d.user.id ?? '',
-          })
-        }
-      })
-      .catch(() => { /* logged out is a valid state */ })
     return () => { alive = false }
-  }, [])
+  }, [auth.initialized])
 
-  // Single logout path reused by every profile surface: the existing
-  // endpoint, existing session clearing, friendly confirmation.
+  // Single logout path reused by every profile surface: AuthContext clears
+  // the server cookie and local state; the toast is UI confirmation only.
   const logout = useCallback(async () => {
-    try { await apiFetch(`${API_BASE}/api/v1/auth/logout`, { method: 'POST' }) } catch { /* cookie may already be gone */ }
-    saveSession(null)
+    await auth.logout()
     pushToast('success', 'Logged out', 'Session cleared.')
-  }, [pushToast])
+  }, [auth, pushToast])
 
   const startGeneration = useCallback(
     async (issue) => {
@@ -1303,27 +1292,13 @@ export default function App() {
       {loginOpen && (
         <LoginModal
           onClose={() => setLoginOpen(false)}
-          onLogin={async (s) => {
-            // Token first (memory), then the authenticated profile for the
-            // real name/avatar — the form identity is only a fallback.
-            saveSession({ email: s.email, name: s.name ?? '', avatarUrl: '', id: '' })
+          onSuccess={(user) => {
+            // AuthContext already holds the authenticated profile (name/avatar
+            // resolved server-side via /me). UI follow-ups only.
             setLoginOpen(false)
-            try {
-              const me = await apiFetch(`${API_BASE}/api/v1/auth/me`, {
-                headers: authHeaders(),
-              }).then((r) => (r.ok ? r.json() : null))
-              if (me?.user) {
-                saveSession({
-                  email: me.user.email ?? s.email,
-                  name: me.user.name ?? s.name ?? '',
-                  avatarUrl: me.user.avatarUrl ?? '',
-                  id: me.user.sub ?? me.user.id ?? '',
-                })
-              }
-            } catch { /* form-provided identity stands */ }
             setGreeting(pickGreeting())
             refreshTemplates()
-            pushToast('success', `Welcome back, ${firstNameOf({ email: s.email, name: s.name ?? '' })}`, s.email)
+            pushToast('success', `Welcome back, ${firstNameOf(user)}`, user.email)
           }}
         />
       )}
@@ -2426,7 +2401,8 @@ function DetailDrawer({ issue, shown, onClose, onRetry, onDelete, onDownload, on
 
 /* ------------------------------- login modal ------------------------------ */
 
-function LoginModal({ onClose, onLogin }) {
+function LoginModal({ onClose, onSuccess }) {
+  const auth = useAuth()
   const [mode, setMode] = useState('login')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -2439,15 +2415,13 @@ function LoginModal({ onClose, onLogin }) {
     setBusy(true)
     setError('')
     try {
-      const res = await apiFetch(`${API_BASE}/api/v1/auth/${mode}`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(mode === 'register' ? { email, password, name } : { email, password }),
-        signal: AbortSignal.timeout(30000),
-      })
-      const data = await res.json().catch(() => ({}))
-      if (!res.ok) throw new Error(data?.error ?? "Couldn't log you in. Please try again.")
-      onLogin({ token: data.token, email, name: mode === 'register' ? name : '' })
+      // AuthContext owns the whole flow: server call, Bearer store, cookie
+      // session, and the authoritative /me profile. No token plumbing here.
+      const user =
+        mode === 'register'
+          ? await auth.register({ email, password, name })
+          : await auth.login({ email, password })
+      onSuccess(user)
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     } finally {
