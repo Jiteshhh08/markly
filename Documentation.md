@@ -26,7 +26,7 @@ React (:5173)
 
 | Path | Purpose |
 |---|---|
-| `src/` | Frontend: `App.jsx` workspace board; `pages/` + `lib/api.js` are unwired reference variants |
+| `src/` | Frontend: `App.jsx` shell (state + composition) + `views/` (4 screens) + `features/assignments/` (data, row/card UI, drawer, create modal) + `features/auth/` + `contexts/` (AuthContext) + `services/api.js` (canonical client) + `components/` |
 | `apps/api/src/index.js` | Express entry: helmet, CORS, logging, auth attach, static `/assets`, rate limit, route mounts, optional Mongo |
 | `apps/api/src/routes/` | `assignments.js` (generate/get/list/html/regen/PUT/docx/latex/pdf), `templates.js` (CRUD + from-pdf), `examples.js` (ingest proxy), `jobs.js`, `auth.js`, `health.js` |
 | `apps/api/src/lib/` | `aiClient.js` (AI calls), `subjects.js` (profiles), `templates.js` (seed loader), `templateStore.js` (versioning), `assignmentStore.js` (records), `queue.js` (jobs), `auth.js` (JWT), `storage.js` (files), `compile.js` (PDF) |
@@ -37,7 +37,7 @@ React (:5173)
 | `services/ai-service/app/` | `main.py` (7 endpoints), `pipeline.py`, `schemas.py`, `prompts.py`, `subjects.py`, `validators.py`, `sections.py`, `search/`, `corpus.py`, `codecheck.py`, `sandbox.py`, `llm/` |
 | `services/ai-service/corpus/` | Ingested examples (runtime data, gitignored) |
 | `services/ai-service/tests/` | `test_phase{1,3,5,6,7,8}.py` (run directly with python) |
-| `packages/shared/` | `assignment.schema.json` (canonical), `assignment.js` shapes, `subject-profiles.json` |
+| `packages/shared/` | `assignment.schema.json` (contract mirror), `subject-profiles.json` (loaded by path; no JS package wiring) |
 | `docker-compose.yml`, `Dockerfile`, `apps/api/Dockerfile`, `services/ai-service/Dockerfile` | Container setup (untested — no Docker on Windows host; use WSL Docker) |
 
 ## 3. Setup
@@ -160,9 +160,6 @@ templates reload right after login), toasts, retry/delete. Every server call car
 The empty board shows a first-assignment hero with a "Go to dashboard" link back
 to the columns.
 
-`src/pages/*` (router + Query + Monaco variants) are reference implementations kept
-for reuse but currently unwired — nothing imports them.
-
 ## 9. Testing
 
 ```bash
@@ -210,11 +207,11 @@ and never shows status codes.
 - [done in prod] texlive pulled + end-to-end PDF compile verified on EC2 (178 KB, `%PDF-1.7`)
 - [done in prod] real Qwen gateway live (`Qwen3.6-35B-A3B`); MongoDB Atlas connected (`[api] connected to MongoDB`); frontend on Vercel (`marklyai.vercel.app`) — see `deployment-notes.md`
 - [you] Production hardening still open: lock CORS to the Vercel origin (currently reflects any origin), `JWT_SECRET` rotation schedule, Redis rate limiting
-- [me, next] Template edits still memory-only (persist on save); reload users from Mongo on boot (restart logs everyone out today)
-- [me, next] Route-level tests for examples/jobs/auth/templates-from-pdf proxies (live-verified only)
-- [me, next] `packages/shared` is load-bearing for nothing (profiles loaded by path) — either wire it as a real dependency or fold it
+- [done] Template edits persist to Mongo on save; users rehydrate from Mongo on boot; route-level auth/persistence regression suites added (`apps/api/tests/`)
+- [done] `packages/shared` dead JS wiring removed (data files kept, loaded by path)
+- [done] BullMQ producer/worker queue names unified (`GENERATION_QUEUE`)
 - [later] Qdrant embeddings behind `retrieve_examples()` (keyword retrieval is fine at current corpus size)
 - [later] "Explain this assignment" tutoring UI (records already carry content + sources)
-- [later] Full shadcn set (hand-rolled Button/Card/Input today), 404 page, frontend error boundaries, list pagination, AI request logging
+- [later] Full shadcn set (hand-rolled Button/Input today), 404 page, frontend error boundaries, list pagination, AI request logging
 - [later] `docker-compose.yml` needs real `.env` files present (only `.example`s are committed) and has never been run (no Docker on Windows host)
 

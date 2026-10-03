@@ -1,5 +1,5 @@
 import { assignmentContentSchema, generateInputSchema } from "../schemas.js";
-import { getRecord, nextAssignmentId, persistRecord, saveRecord } from "./assignmentStore.js";
+import { getRecord, nextAssignmentId, persistWithWarning, saveRecord } from "./assignmentStore.js";
 import { generateViaAiService } from "./aiClient.js";
 import { getSubjectProfile } from "./subjects.js";
 import { getDefaultTemplateDoc, getTemplateDoc } from "./templateStore.js";
@@ -8,6 +8,11 @@ import { getDefaultTemplateDoc, getTemplateDoc } from "./templateStore.js";
 // Transport: BullMQ + Redis when REDIS_URL and BULLMQ_ENABLED=1 are set,
 // otherwise an in-process queue. The jobs map below is the status source of truth either way
 // (multi-process BullMQ deployments should move status into Redis/Mongo).
+
+// Single BullMQ queue name shared by producer and worker. A previous
+// producer/worker mismatch silently wedged every BullMQ job as pending
+// forever — pinned by tests/queue-names.test.js.
+export const GENERATION_QUEUE = "Markly-generation";
 
 const jobs = new Map();
 let counter = 0;
@@ -49,6 +54,19 @@ export function getJob(id) {
   return jobs.get(id) ?? null;
 }
 
+// Jobs visible to this requester (mirrors the GET /:id ownership rule:
+// anonymous jobs are shared, owned jobs are private). Lets a fresh page
+// resume polling generations that are still running after a refresh.
+export function listJobsFor(requesterId) {
+  const out = [];
+  for (const job of jobs.values()) {
+    if (job.userId && job.userId !== "anonymous" && job.userId !== (requesterId ?? "anonymous")) continue;
+    out.push(job);
+  }
+  out.sort((a, b) => String(b.createdAt ?? "").localeCompare(String(a.createdAt ?? "")));
+  return out;
+}
+
 async function ensureBullmq() {
   if (bullmqQueue || queueBackend() !== "bullmq") return bullmqQueue;
   try {
@@ -62,9 +80,11 @@ async function ensureBullmq() {
       maxRetriesPerRequest: 2,
       retryStrategy: (times) => Math.min(times * 500, 5000),
     };
-    bullmqQueue = new Queue("Markly-generation", { connection });
+    bullmqQueue = new Queue(GENERATION_QUEUE, { connection });
+    // STAGE 6: the worker MUST listen on the same queue the producer enqueues
+    // to (see GENERATION_QUEUE above). Dormant in the default memory mode.
     bullmqWorker = new Worker(
-      "assignmentai-generation",
+      GENERATION_QUEUE,
       async (bjob) => runGenerationJob(bjob.data.input, bjob.data.jobId, bjob.data.userId),
       { connection },
     );
@@ -161,7 +181,7 @@ export async function runGenerationJob(input, jobId, userId = "anonymous") {
       createdAt: new Date().toISOString(),
     };
     saveRecord(record);
-    void persistRecord(record);
+    await persistWithWarning(record, "job assignment");
     setStatus(job, "completed", { progress: 100, assignmentId: record.id });
     return record;
   } catch (err) {

@@ -18,7 +18,7 @@ Assignment compiler: **React → Express → FastAPI → Qwen → validated Assi
 | `src/` (root Vite app) | Web frontend — Phase 1 aim form + structured result view |
 | `apps/api/` | Node/Express primary backend, plain JavaScript (validation, orchestration, Mongoose scaffolds) |
 | `services/ai-service/` | Python/FastAPI AI service (prompt → LLM → validate) |
-| `packages/shared/` | Canonical `assignment.schema.json`, JS shape helpers, `subject-profiles.json` |
+| `packages/shared/` | Shared data files: `assignment.schema.json` (contract mirror), `subject-profiles.json` (loaded by filesystem path, not a JS package) |
 | `docker-compose.yml` | `web` + `api` + `ai-service` (needs Docker; not installed on this machine) |
 
 > Stack note: the backend is plain JavaScript (no TypeScript toolchain) by project decision — `node src/index.js`, zero build step.
@@ -58,7 +58,7 @@ Create cards with aim + subject + template dropdown; the detail drawer shows
 sections, sources, document preview, per-section editing + regeneration, LaTeX
 editing, and DOCX/PDF/HTML export. Creation asks about viva heading (heading only,
 handwritten) and typed vs handwritten conclusion; both changeable later per card.
-Header has Templates manager, server History import, and Login. (`src/pages/*` are unwired reference variants.)
+Header has Templates manager, server History import, and Login.
 
 ## Templates, header & watermark
 

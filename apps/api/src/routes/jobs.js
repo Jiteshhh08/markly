@@ -1,8 +1,27 @@
 import { Router } from "express";
-import { createJob, getAssignmentForJob, getJob } from "../lib/queue.js";
+import { createJob, getAssignmentForJob, getJob, listJobsFor } from "../lib/queue.js";
 import { ownerId } from "../lib/assignmentStore.js";
 
 export const jobsRouter = Router();
+
+// Phase 9: list my jobs (newest first), so a refreshed page can resume
+// polling generations that are still running. Ownership-scoped like GET /:id.
+jobsRouter.get("/", (req, res) => {
+  const requester = ownerId(req);
+  const items = listJobsFor(requester).map((job) => ({
+    id: job.id,
+    type: job.type,
+    status: job.status,
+    progress: job.progress ?? 0,
+    backend: job.backend,
+    input: job.input,
+    assignmentId: job.assignmentId,
+    error: job.error,
+    createdAt: job.createdAt,
+    updatedAt: job.updatedAt,
+  }));
+  return res.json({ jobs: items });
+});
 
 // Phase 9: enqueue a background generation job (202 + pollable status).
 jobsRouter.post("/", async (req, res) => {

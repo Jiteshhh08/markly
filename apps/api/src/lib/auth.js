@@ -28,16 +28,72 @@ export async function registerUser({ email, password, name }) {
   const passwordHash = await bcrypt.hash(String(password), 10);
   const user = { id: `usr_${Date.now()}`, email: key, name: name ?? "", passwordHash, tenantIds: [] };
   users.set(key, user);
-  tryPersist(user);
+  // Awaited: the account must be durable before the first token is trusted.
+  // Still non-fatal without Mongo (dev open mode) — tryPersist swallows there.
+  await tryPersist(user);
   return signToken(user);
 }
 
 export async function loginUser({ email, password }) {
-  const user = users.get(String(email ?? "").toLowerCase().trim());
+  const key = String(email ?? "").toLowerCase().trim();
+  let user = users.get(key);
+  if (!user) {
+    // Memory is cold (API restart) — rehydrate from the durable Mongo copy
+    // before rejecting. Without this, every restart logged everyone out.
+    user = await findPersistedUser(key);
+    if (user) users.set(key, user);
+  }
   if (!user || !(await bcrypt.compare(String(password ?? ""), user.passwordHash))) {
     throw new Error("Invalid email or password");
   }
   return signToken(user);
+}
+
+// Warms the in-memory Map from Mongo at boot (and any other cold start).
+// Returns the number of users loaded; never throws (dev without Mongo = 0).
+export async function hydrateUsersFromMongo() {
+  try {
+    const mongoose = (await import("mongoose")).default;
+    if (mongoose.connection.readyState !== 1) return 0;
+    const { User } = await import("../models/index.js");
+    const docs = await User.find({ passwordHash: { $exists: true, $ne: null } }).lean();
+    let loaded = 0;
+    for (const d of docs) {
+      if (!d?.email) continue;
+      users.set(String(d.email).toLowerCase().trim(), {
+        id: d.id ?? d._id?.toString() ?? `usr_${d.email}`,
+        email: String(d.email).toLowerCase().trim(),
+        name: d.name ?? "",
+        avatarUrl: d.avatarUrl ?? "",
+        passwordHash: d.passwordHash,
+        tenantIds: d.tenantIds ?? [],
+      });
+      loaded += 1;
+    }
+    return loaded;
+  } catch {
+    return 0;
+  }
+}
+
+async function findPersistedUser(key) {
+  try {
+    const mongoose = (await import("mongoose")).default;
+    if (mongoose.connection.readyState !== 1) return null;
+    const { User } = await import("../models/index.js");
+    const d = await User.findOne({ email: key }).lean();
+    if (!d?.passwordHash) return null;
+    return {
+      id: d.id ?? d._id?.toString() ?? `usr_${key}`,
+      email: key,
+      name: d.name ?? "",
+      avatarUrl: d.avatarUrl ?? "",
+      passwordHash: d.passwordHash,
+      tenantIds: d.tenantIds ?? [],
+    };
+  } catch {
+    return null;
+  }
 }
 
 export function signToken(user) {
@@ -103,8 +159,18 @@ export function clearSessionCookie(res) {
 
 export function tokenFromRequest(req) {
   const header = req.headers.authorization ?? "";
-  if (header.startsWith("Bearer ")) return header.slice(7);
-  return parseCookies(req)[COOKIE_NAME] ?? "";
+  const bearer = header.startsWith("Bearer ") ? header.slice(7).trim() : "";
+  const cookie = parseCookies(req)[COOKIE_NAME] ?? "";
+  // Deterministic precedence (STAGE 3): a VALID Bearer wins; otherwise a
+  // VALID cookie wins. An invalid/missing Bearer must never mask a valid
+  // cookie session (previously Bearer won unconditionally, so any garbage
+  // Authorization header logged the user out despite a good cookie).
+  // Fallback returns the explicitly supplied credential (even if invalid) so
+  // unauthenticated callers still 401 exactly as before — no weakening:
+  // an attacker with no valid credential gets null from verifyToken either way.
+  if (bearer && verifyToken(bearer)) return bearer;
+  if (cookie && verifyToken(cookie)) return cookie;
+  return bearer || cookie || "";
 }
 
 // Attaches req.user from Bearer token OR httpOnly session cookie; never rejects.
@@ -127,8 +193,9 @@ async function tryPersist(user) {
     const mongoose = (await import("mongoose")).default;
     if (mongoose.connection.readyState !== 1) return;
     const { User } = await import("../models/index.js");
-    const { passwordHash: _drop, ...safe } = user;
-    await User.updateOne({ email: safe.email }, { $set: safe }, { upsert: true });
+    // STAGE 4: the hash MUST be persisted — stripping it (as before) wrote a
+    // Mongo copy that could never satisfy bcrypt login after a restart.
+    await User.updateOne({ email: user.email }, { $set: user }, { upsert: true });
   } catch {
     // Non-fatal in local mode.
   }

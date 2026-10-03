@@ -22,7 +22,12 @@ before(async () => {
   base = `http://127.0.0.1:${server.address().port}`;
 });
 
-after(() => new Promise((resolve) => server.close(resolve)));
+after(async () => {
+  try {
+    server.closeAllConnections?.();
+  } catch { /* older node: fall through to close */ }
+  await new Promise((resolve) => server.close(resolve));
+});
 
 async function call(method, path, body) {
   const res = await fetch(`${base}${path}`, {

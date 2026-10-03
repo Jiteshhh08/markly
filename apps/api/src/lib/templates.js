@@ -28,6 +28,9 @@ export function loadTemplates() {
   return cache;
 }
 
+// Raw seed lookups (used by render tests + one-off tooling). The versioned
+// runtime store (templateStore.js) is canonical for requests; these helpers
+// intentionally read seeds directly so renderer tests stay independent of it.
 export function getTemplate(id) {
   const all = loadTemplates();
   return all.find((t) => t.template?.id === id) ?? null;

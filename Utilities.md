@@ -33,13 +33,11 @@
 | Package | Purpose |
 |---|---|
 | `react`, `react-dom` | UI |
-| `react-router-dom` | Installed; used only by the unwired `src/pages/*` reference variants |
-| `@tanstack/react-query` | Server state (queries, mutations, job polling) |
-| `react-hook-form` | Create form + validation |
-| `@monaco-editor/react` | Installed; used only by the unwired reference `Editor.jsx` (board uses a plain LaTeX textarea) |
 | `tailwindcss`, `@tailwindcss/vite` | Styling (+ the Jira-style `@theme` in `src/index.css`) |
 | `vite`, `@vitejs/plugin-react` | Dev server + build |
 | `oxlint` | Lint (`npm run lint`) |
+
+> Removed (STAGE 6, unused): `react-router-dom`, `@tanstack/react-query`, `@monaco-editor/react`, `react-hook-form` were imported only by the deleted unwired `src/pages/*`; `@types/react`, `@types/react-dom` had no TypeScript to describe. The board uses manual fetch + plain form state + a LaTeX textarea.
 
 ## 4. AI-service dependencies (`services/ai-service/requirements.txt`)
 
@@ -63,7 +61,6 @@
 | Redis (absent) | BullMQ transport + future rate limiting | Set `REDIS_URL` + `BULLMQ_ENABLED=1` when available |
 | Qwen via OpenAI-compatible gateway (college-hosted) | LLM content generation | `LLM_BASE_URL` + `LLM_API_KEY` + `LLM_MODEL`; without all three the service runs a marked stub |
 | Tavily **or** SearXNG (both absent) | Web research | `TAVILY_API_KEY` or `SEARXNG_URL`; without either, research is skipped |
-| Monaco CDN | Editor runtime assets | None (runtime network required) |
 | GitHub (`Jiteshhh08/markly`, branch `main`) | Source of truth | `git push origin main` |
 | AWS EC2 `t3.micro` (Ubuntu 24.04, ap-south-1) + Elastic IP | Prod host for API + AI containers | `/opt/markly` checkout, `docker-compose.prod.yml`, SSH via `Markly.pem` |
 | Vercel | Prod frontend hosting (`marklyai.vercel.app`) | `VITE_API_URL` env var (baked at build; redeploy cache-off after changes) |

@@ -9,7 +9,7 @@ import { examplesRouter } from "./routes/examples.js";
 import { healthRouter } from "./routes/health.js";
 import { jobsRouter } from "./routes/jobs.js";
 import { templatesRouter } from "./routes/templates.js";
-import { authAttach, requireAuthIfEnabled } from "./lib/auth.js";
+import { authAttach, hydrateUsersFromMongo, requireAuthIfEnabled } from "./lib/auth.js";
 import { assetsDir, ensureDirs } from "./lib/storage.js";
 
 dotenv.config();
@@ -21,9 +21,28 @@ process.on("unhandledRejection", (err) => {
 
 const app = express();
 app.use(helmet({ crossOriginResourcePolicy: false }));
-// credentials:true + reflected origin: lets the httpOnly session cookie ride
-// along (required cross-site, harmless same-origin). Never use "*" with credentials.
-app.use(cors({ origin: true, credentials: true }));
+// credentials:true + origin policy: ALLOWED_ORIGINS (comma-separated) locks
+// the API to known frontends. Unset = reflect any origin (local-dev default;
+// the httpOnly session cookie still only goes to callers the browser trusts).
+// Evaluated per request so tests and zero-downtime env changes apply live.
+function corsAllowList() {
+  return String(process.env.ALLOWED_ORIGINS ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+app.use(
+  cors({
+    origin: (origin, cb) => {
+      const allow = corsAllowList();
+      if (allow.length === 0) return cb(null, true);
+      if (!origin) return cb(null, true); // same-origin / non-browser (curl, health checks)
+      return allow.includes(origin) ? cb(null, true) : cb(null, false);
+    },
+    credentials: true,
+  }),
+);
 app.use(express.json({ limit: "1mb" }));
 
 // Minimal request logging (Phase 9 observability baseline).
@@ -55,10 +74,13 @@ app.use("/api/", (req, res, next) => {
 
 app.use("/api/v1/health", healthRouter);
 app.use("/api/v1/auth", authRouter);
+// STAGE 3: every user-owned / mutating resource honors AUTH_REQUIRED=1.
+// Previously only /assignments was guarded; /templates, /jobs and /examples
+// stayed open in production. /health intentionally stays public.
 app.use("/api/v1/assignments", requireAuthIfEnabled, assignmentsRouter);
-app.use("/api/v1/examples", examplesRouter);
-app.use("/api/v1/jobs", jobsRouter);
-app.use("/api/v1/templates", templatesRouter);
+app.use("/api/v1/examples", requireAuthIfEnabled, examplesRouter);
+app.use("/api/v1/jobs", requireAuthIfEnabled, jobsRouter);
+app.use("/api/v1/templates", requireAuthIfEnabled, templatesRouter);
 
 app.get("/", (_req, res) => {
   res.json({ service: "Markly-api", docs: "/api/v1/health" });
@@ -82,10 +104,20 @@ app.use((err, _req, res, _next) => {
 const PORT = Number(process.env.PORT ?? 4000);
 
 async function main() {
+  if (process.env.AUTH_REQUIRED === "1" && corsAllowList().length === 0) {
+    console.warn(
+      "[api] AUTH_REQUIRED=1 but ALLOWED_ORIGINS is unset — CORS reflects any origin. " +
+        "Set ALLOWED_ORIGINS=https://your-frontend in production.",
+    );
+  }
   if (process.env.MONGODB_URI) {
     try {
       await mongoose.connect(process.env.MONGODB_URI);
       console.log("[api] connected to MongoDB");
+      // STAGE 4: warm the auth Map so logins survive restarts. Pre-existing
+      // User docs without a passwordHash are skipped (re-registration needed).
+      const warmed = await hydrateUsersFromMongo();
+      console.log(`[api] rehydrated ${warmed} user(s) from MongoDB`);
     } catch (err) {
       console.warn("[api] MongoDB connection failed, continuing in-memory:", String(err));
     }
