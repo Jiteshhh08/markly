@@ -63,7 +63,10 @@ const departmentSchema = new Schema(
     name: String,
     slug: String,
     status: { type: String, enum: ["active", "inactive"], default: "active", index: true },
+    // STAGE 3: a branch default pins an exact immutable template version.
+    // Publishing a newer version never rewrites this pointer automatically.
     defaultTemplateId: { type: String, default: null },
+    defaultTemplateVersion: { type: Number, default: null, min: 1 },
     metadata: Mixed,
     migrationStage1: Mixed,
   },

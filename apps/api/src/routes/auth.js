@@ -77,28 +77,46 @@ authRouter.patch("/profile", async (req, res) => {
 
 authRouter.get("/me", async (req, res) => {
   if (!req.user) return res.status(401).json({ error: "Not authenticated" });
-  // Enrich token claims (sub+email only) with the stored profile so clients
-  // can display the user's real name. Never fails the request: claims alone
-  // are enough for identity, profile fields just go empty.
+  // Enrich token claims (sub+email only) with the CURRENT persisted profile.
+  // Role and college scope are read from MongoDB, never from the token, so a
+  // privilege change takes effect on the next request without re-issuing a
+  // token. Never fails the request: claims alone are enough for identity;
+  // role/scope simply fall back to the ordinary-user defaults.
   let profile = null;
   try {
-    profile = getProfileByEmail(req.user.email);
-    if (!profile) {
-      // Memory is cold (e.g. API restart) but Mongo may still hold the profile.
-      const mongoose = (await import("mongoose")).default;
-      if (mongoose.connection.readyState === 1) {
-        const { User } = await import("../models/index.js");
-        profile = await User.findOne({ email: String(req.user.email ?? "").toLowerCase().trim() }).lean();
-      }
+    const mongoose = (await import("mongoose")).default;
+    if (mongoose.connection.readyState === 1) {
+      const { User } = await import("../models/index.js");
+      profile = await User.findOne({
+        email: String(req.user.email ?? "").toLowerCase().trim(),
+      }).lean();
     }
+    if (!profile) profile = getProfileByEmail(req.user.email);
   } catch {
     profile = null;
   }
+  const role = ["user", "college_admin", "platform_admin"].includes(profile?.role)
+    ? profile.role
+    : "user";
+  const collegeAdminOf = Array.isArray(profile?.collegeAdminOf)
+    ? profile.collegeAdminOf.map(String)
+    : [];
+  const tenantIds = Array.isArray(profile?.tenantIds) ? profile.tenantIds.map(String) : [];
   return res.json({
     user: {
       ...req.user,
       name: profile?.name ?? "",
       avatarUrl: profile?.avatarUrl ?? profile?.avatar ?? "",
+      role,
+      collegeAdminOf,
+      tenantIds,
+      preferences: profile?.preferences
+        ? {
+            collegeId: profile.preferences.collegeId ?? null,
+            departmentId: profile.preferences.departmentId ?? null,
+            preferredTemplateId: profile.preferences.preferredTemplateId ?? null,
+          }
+        : null,
     },
   });
 });

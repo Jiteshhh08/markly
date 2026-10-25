@@ -17,12 +17,14 @@ import { DashboardView } from './views/DashboardView.jsx'
 import { AssignmentsView } from './views/AssignmentsView.jsx'
 import { HistoryView } from './views/HistoryView.jsx'
 import { TemplatesView } from './views/TemplatesView.jsx'
+import { AdminView } from './views/AdminView.jsx'
 import { DetailDrawer } from './features/assignments/DetailDrawer.jsx'
 import { CreateModal } from './features/assignments/CreateModal.jsx'
 
 /* ---------------------------------- app ------------------------------------ */
 
-const NAV = [  { id: 'dashboard', label: 'Dashboard', icon: 'home' },
+const NAV = [
+  { id: 'dashboard', label: 'Dashboard', icon: 'home' },
   { id: 'assignments', label: 'Assignments', icon: 'file' },
   { id: 'history', label: 'History', icon: 'archive' },
   { id: 'templates', label: 'Templates', icon: 'grid' },
@@ -50,6 +52,11 @@ export default function App() {
   // status, login/logout and the /me bootstrap. This component only reads.
   const auth = useAuth()
   const session = auth.user
+  const isAdmin = session?.role === 'platform_admin' || session?.role === 'college_admin'
+  const navItems = useMemo(
+    () => (isAdmin ? [...NAV, { id: 'admin', label: 'Admin', icon: 'list' }] : NAV),
+    [isAdmin],
+  )
   // Selected once per visit (and re-picked on each fresh login) — never
   // re-rolled on re-render, so the line stays stable for the whole session.
   const [greeting, setGreeting] = useState(() => pickGreeting())
@@ -219,6 +226,13 @@ export default function App() {
       .catch(() => { /* board stands on its own */ })
     return () => { alive = false }
   }, [auth.initialized, auth.status])
+
+  // A role downgrade (or logout) must not leave an administrator-only view
+  // mounted. The API still rejects every request, but returning to the
+  // dashboard avoids showing stale admin data.
+  useEffect(() => {
+    if (view === 'admin' && !isAdmin) setView('dashboard')
+  }, [view, isAdmin])
 
   // Single logout path reused by every profile surface: AuthContext clears
   // the server cookie and local state; the board is cleared immediately so no
@@ -613,7 +627,7 @@ export default function App() {
           </Button>
         </div>
         <nav className="mt-4 flex flex-col gap-0.5 px-3" aria-label="Primary">
-          {NAV.map((n) => {
+          {navItems.map((n) => {
             const active = view === n.id
             const count = n.id === 'assignments' ? issues.length : null
             return (
@@ -694,7 +708,7 @@ export default function App() {
             </div>
           </div>
           <nav className="flex gap-1 overflow-x-auto px-3 pb-2.5 sm:px-4" aria-label="Primary">
-            {NAV.map((n) => {
+            {navItems.map((n) => {
               const active = view === n.id
               return (
                 <button
@@ -806,6 +820,16 @@ export default function App() {
               notify={pushToast}
               onUse={(t) => { setPrefill({ templateId: t.id }); setCreateOpen(true) }}
               onAuthRequired={handleAuthRequired}
+              session={session}
+            />
+          )}
+
+          {view === 'admin' && isAdmin && (
+            <AdminView
+              session={session}
+              notify={pushToast}
+              onAuthRequired={handleAuthRequired}
+              onOpenTemplates={() => setView('templates')}
             />
           )}
         </main>

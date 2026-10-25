@@ -1,4 +1,5 @@
 import http from "node:http";
+import jwt from "jsonwebtoken";
 import { signToken } from "../../src/lib/auth.js";
 
 // STAGE 2 test helpers. These only wire a real Express app to a real ephemeral
@@ -29,6 +30,26 @@ export function bearerFor(user) {
   return `Bearer ${signToken(user)}`;
 }
 
+// STAGE 3: a token carrying attacker-supplied extra claims (for example a
+// forged platform_admin role). Authorization must ignore these claims and read
+// the persisted user instead.
+export function forgedCookieFor(user, extra = {}) {
+  const token = jwt.sign(
+    { sub: user.id, email: user.email, ...extra },
+    process.env.JWT_SECRET,
+    { expiresIn: "7d" },
+  );
+  return `markly_token=${token}`;
+}
+
+function isMultipartBody(body) {
+  return (
+    (typeof FormData !== "undefined" && body instanceof FormData) ||
+    (typeof Blob !== "undefined" && body instanceof Blob) ||
+    (typeof URLSearchParams !== "undefined" && body instanceof URLSearchParams)
+  );
+}
+
 export async function request(
   base,
   method,
@@ -41,7 +62,9 @@ export async function request(
 
   let payload;
   if (body !== undefined) {
-    if (Buffer.isBuffer(body) || typeof body === "string") {
+    if (isMultipartBody(body) || Buffer.isBuffer(body) || typeof body === "string") {
+      // Fetch computes the multipart boundary itself. Manually setting a
+      // content-type here would corrupt the upload.
       payload = body;
     } else {
       outgoing["content-type"] ??= "application/json";

@@ -7,8 +7,9 @@ import {
   TemplatePersistenceError,
   createTemplatePersisted,
   ensureTemplatesLoaded,
-  getTemplateVersion,
-  listTemplates,
+  getTemplateVersionAuthoritative,
+  listTemplateRecordsAuthoritative,
+  listTemplateVersionsAuthoritative,
   updateTemplatePersisted,
 } from "../lib/templateStore.js";
 import { sendError } from "../lib/errors.js";
@@ -18,7 +19,6 @@ import {
   TEMPLATE_SCOPE_LEGACY,
   TEMPLATE_SCOPE_PLATFORM,
   TEMPLATE_SCOPE_PRIVATE,
-  TEMPLATE_STATUSES,
   canCreateTemplate,
   canManageTemplate,
   canSetTemplateStatus,
@@ -31,54 +31,56 @@ import {
   templateVisibleInCatalogue,
 } from "../lib/templateCatalogue.js";
 import { requestActor } from "../lib/templateResolution.js";
+import {
+  TemplateValidationError,
+  assertTemplateStatusTransition,
+  pickTemplateRuntimeFields,
+  safeTemplateName,
+  validateTemplateFields,
+} from "../lib/templateValidation.js";
+import { recordAudit, safeAuditMetadata } from "../lib/audit.js";
+import { MAX_PDF_BYTES, UploadValidationError, validatePdfUpload } from "../lib/uploadSafety.js";
+import { renderHtml } from "../render/html.js";
 
 export const templatesRouter = Router();
 
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 25 * 1024 * 1024 },
-  fileFilter: (_req, file, cb) => {
-    if (file.mimetype === "application/pdf" || file.originalname.toLowerCase().endsWith(".pdf")) {
-      cb(null, true);
-    } else {
-      cb(new Error("Only .pdf uploads are accepted"));
-    }
-  },
+  limits: { fileSize: MAX_PDF_BYTES, files: 1 },
 });
 
-const RUNTIME_FIELDS = new Set([
+const TEMPLATE_AUDIT_FIELDS = [
+  "id",
+  "version",
   "name",
   "status",
-  "page",
-  "pageSettings",
-  "typography",
-  "requiredSections",
-  "studentMetadataFields",
-  "assets",
-  "watermark",
-  "header",
-  "footer",
-  "headerFooter",
-  "facultyTable",
-  "layoutPolicy",
-  "metadata",
-  "description",
-]);
+  "scope",
+  "tenantId",
+  "departmentId",
+];
 
 function aiBase() {
   return (process.env.AI_SERVICE_URL ?? "http://127.0.0.1:8001").replace(/\/$/, "");
 }
 
-function summary(t) {
+function summary(t, updatedAt = null) {
   return {
     id: t.id,
     version: t.version,
     name: t.name,
     status: t.status,
     scope: templateScope(t),
-    tenantId: t.tenantId,
-    departmentId: t.departmentId,
+    tenantId: t.tenantId ?? null,
+    departmentId: t.departmentId ?? null,
+    ownerUserId: t.ownerUserId ?? null,
+    updatedAt: updatedAt ?? t.updatedAt ?? null,
   };
+}
+
+function auditTemplate(t) {
+  const out = {};
+  for (const field of TEMPLATE_AUDIT_FIELDS) out[field] = t?.[field] ?? null;
+  return out;
 }
 
 function isPrivateOwner(req, t) {
@@ -160,10 +162,10 @@ async function catalogueContext(req, res) {
 
 function cleanScopeId(value, label) {
   if (value === undefined || value === null) return null;
-  if (Array.isArray(value) || typeof value !== "string") {
+  if (Array.isArray(value) || typeof value === "object") {
     throw new CatalogueScopeError(`${label} must be a single string value.`);
   }
-  const id = value.trim();
+  const id = String(value).trim();
   if (!id) return null;
   if (id.length > 128) throw new CatalogueScopeError(`${label} is too long.`);
   return id;
@@ -306,40 +308,16 @@ async function createScope(req, res, body) {
   };
 }
 
-function pickRuntimeFields(body) {
-  const out = {};
-  for (const [key, value] of Object.entries(body ?? {})) {
-    if (RUNTIME_FIELDS.has(key)) out[key] = value;
-  }
-  return out;
-}
-
 function validateRuntimeFields(fields, res, { requireName = false } = {}) {
-  if (fields.name !== undefined) {
-    if (typeof fields.name !== "string" || fields.name.trim().length < 3) {
-      res.status(400).json({ error: "Template name (min 3 chars) is required" });
-      return false;
+  try {
+    return validateTemplateFields(fields, { requireName });
+  } catch (err) {
+    if (err instanceof TemplateValidationError) {
+      res.status(400).json({ error: err.message });
+      return null;
     }
-    fields.name = fields.name.trim();
-  } else if (requireName) {
-    res.status(400).json({ error: "Template name (min 3 chars) is required" });
-    return false;
+    throw err;
   }
-
-  if (fields.status !== undefined && !TEMPLATE_STATUSES.includes(fields.status)) {
-    res.status(400).json({ error: `Invalid template status (one of ${TEMPLATE_STATUSES.join(", ")})` });
-    return false;
-  }
-
-  for (const key of ["requiredSections", "studentMetadataFields"]) {
-    if (fields[key] === undefined) continue;
-    if (!Array.isArray(fields[key]) || !fields[key].every((value) => typeof value === "string")) {
-      res.status(400).json({ error: `${key} must be an array of strings` });
-      return false;
-    }
-  }
-
-  return true;
 }
 
 function sendTemplateError(res, err, fallback) {
@@ -352,24 +330,219 @@ function sendTemplateError(res, err, fallback) {
   return sendError(res, 500, fallback, err);
 }
 
+async function auditTemplateAction(req, res, action, template, before = null) {
+  try {
+    await recordAudit({
+      actor: req.actor ?? {
+        id: req.user?.sub,
+        email: req.user?.email ?? "",
+      },
+      action,
+      entityType: "template",
+      entityId: template.id,
+      collegeId: template.tenantId ?? null,
+      metadata: before
+        ? { before: safeAuditMetadata(before), after: safeAuditMetadata(auditTemplate(template)) }
+        : { after: safeAuditMetadata(auditTemplate(template)) },
+    });
+    return true;
+  } catch (err) {
+    console.error("[templates] audit persistence failed:", String(err).slice(0, 500));
+    res.status(500).json({
+      error:
+        "The change was saved, but its audit record could not be written. Please contact an administrator.",
+    });
+    return false;
+  }
+}
+
+async function clearArchivedDefaults(template, req) {
+  const branches = await Department.find({ defaultTemplateId: template.id }).lean();
+  for (const branch of branches) {
+    await Department.updateOne(
+      { id: branch.id },
+      { $set: { defaultTemplateId: null, defaultTemplateVersion: null } },
+    );
+    await recordAudit({
+      actor: req.actor ?? { id: req.user?.sub, email: req.user?.email ?? "" },
+      action: "branch.default_template.clear",
+      entityType: "branch",
+      entityId: branch.id,
+      collegeId: branch.tenantId,
+      metadata: {
+        reason: "template archived",
+        before: {
+          defaultTemplateId: branch.defaultTemplateId,
+          defaultTemplateVersion: branch.defaultTemplateVersion ?? null,
+        },
+        after: { defaultTemplateId: null, defaultTemplateVersion: null },
+      },
+    });
+  }
+}
+
+function sampleContent() {
+  return {
+    title: "Template Preview",
+    experimentNumber: 1,
+    aim: "Preview the selected template without generating an assignment.",
+    objectives: ["Review the page frame, header, typography and required sections."],
+    theory: ["This is representative body text. The real document uses generated assignment content."],
+    steps: [
+      {
+        number: 1,
+        title: "Review the format",
+        description: ["Check the header, footer, watermark, margins and page border."],
+        code: "SELECT * FROM students;",
+        language: "sql",
+      },
+    ],
+    conclusion: "Save a draft, preview again, then publish a new immutable version when ready.",
+    metadata: {},
+  };
+}
+
+async function loadManagedTemplate(req, res, { requirePublisher = false } = {}) {
+  const actor = await persistedActor(req, res);
+  if (!actor) return null;
+  const template = await getTemplateVersionAuthoritative(req.params.id);
+  if (!template) {
+    res.status(404).json({ error: "Template not found" });
+    return null;
+  }
+  if (requirePublisher) {
+    if (!canSetTemplateStatus(actor, template, "published")) {
+      res.status(403).json({ error: "You do not have permission to publish this template" });
+      return null;
+    }
+  } else if (!canManageTemplate(actor, template)) {
+    res.status(403).json({ error: "You do not have permission to manage this template" });
+    return null;
+  }
+  return { actor, template };
+}
+
 // Phase 8/STAGE 2: list the latest version of each visible template.
-// Visibility is evaluated server-side with the persisted actor, an optional
-// explicit college/branch scope, and the Stage 1 access helpers. Drafts are
-// hidden from ordinary users; private templates are owner-only; legacy
-// templates are platform-admin review material.
+// STAGE 3 adds explicit status/scope filters for the admin catalogue. All
+// reads use authoritative MongoDB records so another API instance's newly
+// published version is visible immediately.
 templatesRouter.get("/", async (req, res) => {
   if (!(await ensureStore(res))) return;
   const context = await catalogueContext(req, res);
   if (!context) return;
 
-  const templates = listTemplates()
-    .filter((template) =>
-      templateVisibleInCatalogue(context.actor, template, context.scope, {
-        explicit: context.explicit,
-      }),
-    )
-    .map(summary);
-  return res.json({ templates });
+  const statusFilter = req.query.status;
+  if (
+    statusFilter !== undefined &&
+    !["draft", "active", "published", "archived"].includes(String(statusFilter))
+  ) {
+    return res.status(400).json({ error: "Invalid template status filter" });
+  }
+  const scopeFilter = req.query.scope;
+  if (scopeFilter !== undefined && !TEMPLATE_SCOPES.includes(String(scopeFilter))) {
+    return res.status(400).json({ error: "Invalid template scope filter" });
+  }
+
+  try {
+    const records = await listTemplateRecordsAuthoritative();
+    const templates = records
+      .filter(({ template }) =>
+        templateVisibleInCatalogue(context.actor, template, context.scope, {
+          explicit: context.explicit,
+        }),
+      )
+      .filter(({ template }) => {
+        if (scopeFilter !== undefined && templateScope(template) !== scopeFilter) return false;
+        if (statusFilter === undefined) return true;
+        if (statusFilter === "published") {
+          return template.status === "active" || template.status === "published";
+        }
+        if (statusFilter === "active") {
+          return template.status === "active" || template.status === "published";
+        }
+        return template.status === statusFilter;
+      })
+      .map(({ template, updatedAt, createdAt }) => summary(template, updatedAt ?? createdAt));
+    return res.json({ templates });
+  } catch (err) {
+    return sendError(res, 503, "Templates are temporarily unavailable. Please try again.", err);
+  }
+});
+
+// Version history is a management view: private history is owner-only, shared
+// history follows the same college/platform management boundary as editing.
+templatesRouter.get("/:id/versions", async (req, res) => {
+  if (!(await ensureStore(res))) return;
+  const actor = await persistedActor(req, res);
+  if (!actor) return undefined;
+  try {
+    const latest = await getTemplateVersionAuthoritative(req.params.id);
+    if (!latest) return res.status(404).json({ error: "Template not found" });
+    if (!canManageTemplate(actor, latest)) {
+      return res.status(403).json({ error: "You do not have permission to view this template's history" });
+    }
+    const records = await listTemplateVersionsAuthoritative(req.params.id);
+    return res.json({
+      versions: records.map(({ template, createdAt, updatedAt }) => ({
+        id: template.id,
+        version: template.version,
+        name: template.name,
+        status: template.status,
+        scope: templateScope(template),
+        createdBy: template.createdBy ?? null,
+        publishedAt: template.publishedAt ?? null,
+        archivedAt: template.archivedAt ?? null,
+        createdAt,
+        updatedAt,
+      })),
+    });
+  } catch (err) {
+    return sendError(res, 503, "Template history is temporarily unavailable. Please try again.", err);
+  }
+});
+
+function renderPreview(template) {
+  return renderHtml(sampleContent(), { template }, { includeVivaTitle: true, typedConclusion: true });
+}
+
+templatesRouter.get("/:id/preview", async (req, res) => {
+  if (!(await ensureStore(res))) return;
+  const managed = await loadManagedTemplate(req, res);
+  if (!managed) return undefined;
+  let version = null;
+  if (req.query.version !== undefined) {
+    version = Number(req.query.version);
+    if (!Number.isInteger(version) || version < 1) {
+      return res.status(400).json({ error: "version must be a positive integer" });
+    }
+  }
+  try {
+    const template = version == null
+      ? managed.template
+      : await getTemplateVersionAuthoritative(req.params.id, version);
+    if (!template) return res.status(404).json({ error: "Template version not found" });
+    return res.json({ html: renderPreview(template) });
+  } catch (err) {
+    return sendError(res, 503, "Template preview is temporarily unavailable. Please try again.", err);
+  }
+});
+
+// Unsaved preview: validates the same configuration rules as save/publish and
+// never writes a version. This is what the editor calls before committing.
+templatesRouter.post("/:id/preview", async (req, res) => {
+  if (!(await ensureStore(res))) return;
+  const managed = await loadManagedTemplate(req, res);
+  if (!managed) return undefined;
+  const patch = validateRuntimeFields(pickTemplateRuntimeFields(req.body ?? {}), res);
+  if (patch === null) return undefined;
+  try {
+    const merged = { ...managed.template, ...patch, id: managed.template.id, version: managed.template.version };
+    const template = validateRuntimeFields(merged, res);
+    if (template === null) return undefined;
+    return res.json({ html: renderPreview({ ...managed.template, ...template }) });
+  } catch (err) {
+    return sendError(res, 503, "Template preview is temporarily unavailable. Please try again.", err);
+  }
 });
 
 // Phase 8: get a version (?version=N, default latest). Old versions stay readable forever.
@@ -386,16 +559,20 @@ templatesRouter.get("/:id", async (req, res) => {
     }
   }
 
-  const template = getTemplateVersion(req.params.id, version);
-  if (
-    !template ||
-    !templateVisibleInCatalogue(context.actor, template, context.scope, {
-      explicit: context.explicit,
-    })
-  ) {
-    return res.status(404).json({ error: "Template not found" });
+  try {
+    const template = await getTemplateVersionAuthoritative(req.params.id, version);
+    if (
+      !template ||
+      !templateVisibleInCatalogue(context.actor, template, context.scope, {
+        explicit: context.explicit,
+      })
+    ) {
+      return res.status(404).json({ error: "Template not found" });
+    }
+    return res.json({ template });
+  } catch (err) {
+    return sendError(res, 503, "Template storage is unavailable. Please try again.", err);
   }
-  return res.json({ template });
 });
 
 // Phase 8/STAGE 2: create (always starts at v1 draft by default). The response
@@ -405,8 +582,8 @@ templatesRouter.post("/", async (req, res) => {
   if (!(await ensureStore(res))) return;
 
   const body = req.body ?? {};
-  const fields = pickRuntimeFields(body);
-  if (!validateRuntimeFields(fields, res, { requireName: true })) return;
+  const fields = validateRuntimeFields(pickTemplateRuntimeFields(body), res, { requireName: true });
+  if (fields === null) return undefined;
 
   const ownership = await createScope(req, res, body);
   if (!ownership) return;
@@ -417,17 +594,22 @@ templatesRouter.post("/", async (req, res) => {
       ...ownership,
       createdBy: req.user?.sub ?? null,
     });
+    if (!(await auditTemplateAction(req, res, "template.create", template))) return undefined;
     return res.status(201).json({ template });
   } catch (err) {
     return sendTemplateError(res, err, "Couldn't create the template. Please try again.");
   }
 });
 
-// Phase 8/STAGE 2: update forks a NEW immutable version (never mutates history).
-templatesRouter.put("/:id", async (req, res) => {
-  if (!(await ensureStore(res))) return;
+async function updateTemplateFromRequest(req, res, { forceStatus = null, action = null } = {}) {
+  if (!(await ensureStore(res))) return undefined;
 
-  const current = getTemplateVersion(req.params.id);
+  let current;
+  try {
+    current = await getTemplateVersionAuthoritative(req.params.id);
+  } catch (err) {
+    return sendError(res, 503, "Template storage is unavailable. Please try again.", err);
+  }
   if (!current) return res.status(404).json({ error: "Template not found" });
 
   const scope = templateScope(current);
@@ -442,12 +624,21 @@ templatesRouter.put("/:id", async (req, res) => {
     if (!canManageTemplate(actor, current)) {
       return res.status(403).json({ error: "You do not have permission to edit this template" });
     }
+    req.actor = actor;
   }
 
-  const patch = pickRuntimeFields(req.body ?? {});
-  if (!validateRuntimeFields(patch, res)) return;
+  const rawPatch = pickTemplateRuntimeFields(req.body ?? {});
+  const patch = validateRuntimeFields(rawPatch, res);
+  if (patch === null) return undefined;
+  if (forceStatus) patch.status = forceStatus;
 
   if (patch.status !== undefined && patch.status !== current.status) {
+    try {
+      assertTemplateStatusTransition(current.status, patch.status);
+    } catch (err) {
+      if (err instanceof TemplateValidationError) return res.status(400).json({ error: err.message });
+      throw err;
+    }
     const statusActor =
       scope === TEMPLATE_SCOPE_PRIVATE
         ? {
@@ -463,19 +654,67 @@ templatesRouter.put("/:id", async (req, res) => {
     }
   }
 
+  if (patch.status === "active" || patch.status === "published") patch.publishedAt = new Date();
+  if (patch.status === "archived") patch.archivedAt = new Date();
+  if (patch.status === "draft") {
+    patch.publishedAt = null;
+    patch.archivedAt = null;
+  }
+
   try {
     const template = await updateTemplatePersisted(req.params.id, patch);
     if (!template) return res.status(404).json({ error: "Template not found" });
+    const auditAction =
+      action ??
+      (patch.status === "archived"
+        ? "template.archive"
+        : patch.status === "active" || patch.status === "published"
+          ? "template.publish"
+          : "template.update");
+    if (!(await auditTemplateAction(req, res, auditAction, template, auditTemplate(current)))) {
+      return undefined;
+    }
+    if (template.status === "archived") {
+      try {
+        await clearArchivedDefaults(template, req);
+      } catch (err) {
+        console.error("[templates] failed to clear branch defaults:", String(err).slice(0, 500));
+        return res.status(500).json({
+          error:
+            "The template was archived, but dependent branch defaults could not be cleared. Please review branch settings.",
+        });
+      }
+    }
     return res.json({ template });
   } catch (err) {
     return sendTemplateError(res, err, "Couldn't update the template. Please try again.");
   }
-});
+}
+
+// Phase 8/STAGE 2: update forks a NEW immutable version (never mutates history).
+templatesRouter.put("/:id", async (req, res) => updateTemplateFromRequest(req, res));
+
+templatesRouter.post("/:id/publish", async (req, res) =>
+  updateTemplateFromRequest(req, res, { forceStatus: "published", action: "template.publish" }),
+);
+
+templatesRouter.post("/:id/archive", async (req, res) =>
+  updateTemplateFromRequest(req, res, { forceStatus: "archived", action: "template.archive" }),
+);
 
 // Phase 8: upload a sample PDF -> structure draft -> saved as v1 draft for review.
+// STAGE 3: the upload is signature-checked and bounded; extraction never
+// publishes, and the request is audited only after the draft is durable.
 templatesRouter.post("/from-pdf", upload.single("file"), async (req, res) => {
-  if (!req.file) return res.status(400).json({ error: "No PDF file uploaded (field name: file)" });
-  if (!(await ensureStore(res))) return;
+  try {
+    validatePdfUpload(req.file);
+  } catch (err) {
+    if (err instanceof UploadValidationError) {
+      return res.status(400).json({ error: err.message });
+    }
+    throw err;
+  }
+  if (!(await ensureStore(res))) return undefined;
 
   const ownership = await createScope(req, res, req.body ?? {});
   if (!ownership) return undefined;
@@ -483,32 +722,74 @@ templatesRouter.post("/from-pdf", upload.single("file"), async (req, res) => {
   try {
     const form = new FormData();
     form.append("file", new Blob([req.file.buffer], { type: "application/pdf" }), req.file.originalname);
-    const response = await fetch(`${aiBase()}/v1/analyze-template`, { method: "POST", body: form });
+    const response = await fetch(`${aiBase()}/v1/analyze-template`, {
+      method: "POST",
+      body: form,
+      signal: AbortSignal.timeout(60_000),
+    });
     const draft = await response.json().catch(() => ({}));
     if (!response.ok) {
       console.error("[api] analyze-template failed:", response.status, JSON.stringify(draft).slice(0, 500));
       return res.status(response.status).json({ error: "Template extraction failed" });
     }
 
-    const fields = pickRuntimeFields(req.body ?? {});
-    const name = String(
-      req.body?.name ?? draft.suggestedName ?? "Imported template",
-    ).slice(0, 120);
+    const rawFields = pickTemplateRuntimeFields(req.body ?? {});
+    // Import is a draft workflow. A caller can never skip review by supplying
+    // status=active/published in the multipart form.
+    rawFields.status = "draft";
+    const fields = validateRuntimeFields(rawFields, res);
+    if (fields === null) return undefined;
+    const name = safeTemplateName(req.body?.name ?? draft.suggestedName, "Imported template");
+    const candidateSections = Array.isArray(draft.requiredSections)
+      ? draft.requiredSections
+      : fields.requiredSections;
+    let requiredSections = fields.requiredSections;
+    if (candidateSections !== undefined) {
+      try {
+        requiredSections = validateTemplateFields(
+          { requiredSections: candidateSections },
+          {},
+        ).requiredSections;
+      } catch {
+        // Extraction is advisory. An invalid suggestion falls back to the
+        // validated form value/default rather than blocking the draft.
+        requiredSections = fields.requiredSections;
+      }
+    }
+
     const template = await createTemplatePersisted({
       ...fields,
-      name: name.trim().length >= 3 ? name : "Imported template",
-      requiredSections: Array.isArray(draft.requiredSections)
-        ? draft.requiredSections
-        : fields.requiredSections,
+      name,
+      ...(requiredSections !== undefined ? { requiredSections } : {}),
       status: "draft",
       ...ownership,
       createdBy: req.user?.sub ?? null,
     });
-    return res.status(201).json({ template, analysis: draft });
+    if (!(await auditTemplateAction(req, res, "template.import", template))) return undefined;
+    return res.status(201).json({
+      template,
+      analysis: {
+        suggestedName: draft.suggestedName ?? null,
+        detectedHeadings: Array.isArray(draft.detectedHeadings) ? draft.detectedHeadings.slice(0, 20) : [],
+        requiredSections: requiredSections ?? [],
+        chars: Number(draft.chars ?? 0),
+      },
+    });
   } catch (err) {
     if (err instanceof TemplateConflictError || err instanceof TemplatePersistenceError) {
       return sendTemplateError(res, err, "Couldn't create the template. Please try again.");
     }
     return sendError(res, 502, "Template extraction failed", String(err).slice(0, 500));
   }
+});
+
+// Multer errors (oversized/malformed multipart) are client errors, not 500s.
+templatesRouter.use((err, _req, res, next) => {
+  if (err instanceof multer.MulterError) {
+    return res.status(400).json({ error: "The uploaded file is too large or malformed" });
+  }
+  if (err instanceof UploadValidationError) {
+    return res.status(400).json({ error: err.message });
+  }
+  return next(err);
 });

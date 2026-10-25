@@ -3,8 +3,8 @@ import { loadActor } from "./roles.js";
 import { canUseTemplate, templateScope } from "./templateAccess.js";
 import {
   ensureTemplatesLoaded,
-  getTemplateVersion,
-  selectDefaultTemplate,
+  getTemplateVersionAuthoritative,
+  selectDefaultTemplateAuthoritative,
 } from "./templateStore.js";
 
 // STAGE 2: exact template identity resolution.
@@ -107,8 +107,8 @@ export async function resolveTemplateForGeneration({
 
     const template =
       requestedVersion == null
-        ? getTemplateVersion(templateId)
-        : getTemplateVersion(templateId, requestedVersion);
+        ? await getTemplateVersionAuthoritative(templateId)
+        : await getTemplateVersionAuthoritative(templateId, requestedVersion);
     if (!template || !canUseTemplate(effectiveActor, template)) {
       // Do not reveal whether a template exists in another college or belongs
       // to another user: both cases are the same safe not-found response.
@@ -119,7 +119,7 @@ export async function resolveTemplateForGeneration({
     return { template, snapshot: templateSnapshot(template) };
   }
 
-  const template = selectDefaultTemplate();
+  const template = await selectDefaultTemplateAuthoritative();
   if (!template) {
     throw new TemplateResolutionError(
       "No published template is available for generation.",
@@ -143,7 +143,7 @@ export async function resolvePinnedTemplate(snapshot) {
       { status: 409, code: "generation_template_version_unavailable" },
     );
   }
-  const template = getTemplateVersion(id, version);
+  const template = await getTemplateVersionAuthoritative(id, version);
   if (!template) {
     throw new TemplateResolutionError(
       "The generation template version is unavailable.",
@@ -169,7 +169,7 @@ export async function resolveAssignmentTemplate(record) {
       { status: 409, code: "assignment_template_version_missing" },
     );
   }
-  const template = getTemplateVersion(id, version);
+  const template = await getTemplateVersionAuthoritative(id, version);
   if (!template) {
     throw new TemplateResolutionError(
       "The template version used by this assignment is no longer available.",

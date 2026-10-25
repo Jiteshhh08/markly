@@ -90,6 +90,44 @@ function fromMongoDoc(doc) {
   return stripMongoUnsafeKeys(out);
 }
 
+function normalizeMongoTemplate(doc) {
+  const template = fromMongoDoc(doc);
+  if (!template?.id) return null;
+  const version = normalizeVersion(template.version);
+  if (!version) return null;
+  template.id = String(template.id);
+  template.version = version;
+  return template;
+}
+
+// Replace every cached version for one persisted id with the authoritative
+// MongoDB set. This prevents a cache entry (including a built-in seed) from
+// outliving the durable record it is supposed to mirror.
+function installPersistedVersions(id, docs) {
+  const templateId = String(id);
+  const prefix = `${templateId}@`;
+  for (const templateKey of [...versions.keys()]) {
+    if (templateKey.startsWith(prefix)) versions.delete(templateKey);
+  }
+  for (const seedKey of [...seedKeys.keys()]) {
+    if (seedKey.startsWith(prefix)) seedKeys.delete(seedKey);
+  }
+
+  let highest = 0;
+  for (const doc of docs) {
+    const template = normalizeMongoTemplate(doc);
+    if (!template) continue;
+    versions.set(key(template.id, template.version), template);
+    highest = Math.max(highest, template.version);
+  }
+  if (highest > 0) latest.set(templateId, highest);
+  else latest.delete(templateId);
+}
+
+function mongoReady() {
+  return mongoose.connection.readyState === 1;
+}
+
 function seedFromFiles() {
   if (seededFromFiles) return;
   seededFromFiles = true;
@@ -279,6 +317,146 @@ export function getTemplateVersion(id, version) {
   return clone(versions.get(key(templateId, normalized)) ?? null);
 }
 
+// STAGE 3 cross-instance consistency.
+//
+// The in-memory cache is never authoritative for a template id that exists in
+// MongoDB. Reads that decide what an administrator sees (catalogue, editor,
+// history, preview, generation/export resolution) use these helpers, which
+// query the durable records directly. A template published by another API
+// instance is therefore visible immediately, without Redis or a sticky
+// session. Memory-only templates (local tests/tooling) still fall back to the
+// cache, and a persisted id never silently falls back to a seed version.
+export async function getTemplateVersionAuthoritative(id, version) {
+  seedFromFiles();
+  const templateId = String(id ?? "");
+  if (!templateId) return null;
+  if (!mongoReady()) return getTemplateVersion(templateId, version);
+
+  const docs = await Template.find({ id: templateId }).sort({ version: 1 }).lean();
+  if (docs.length === 0) return getTemplateVersion(templateId, version);
+
+  installPersistedVersions(templateId, docs);
+  if (version == null) {
+    const highest = latest.get(templateId);
+    return highest == null ? null : clone(versions.get(key(templateId, highest)) ?? null);
+  }
+  const normalized = normalizeVersion(version);
+  if (!normalized) return null;
+  return clone(versions.get(key(templateId, normalized)) ?? null);
+}
+
+export async function listTemplateVersionsAuthoritative(id) {
+  seedFromFiles();
+  const templateId = String(id ?? "");
+  if (!templateId) return [];
+  if (!mongoReady()) {
+    const out = [];
+    for (const template of versions.values()) {
+      if (template.id !== templateId) continue;
+      out.push({ template: clone(template), createdAt: null, updatedAt: null });
+    }
+    return out.sort((a, b) => a.template.version - b.template.version);
+  }
+
+  const docs = await Template.find({ id: templateId }).sort({ version: 1 }).lean();
+  if (docs.length === 0) {
+    return listTemplateVersionsAuthoritativeInMemory(templateId);
+  }
+  installPersistedVersions(templateId, docs);
+  return docs
+    .map((doc) => {
+      const template = normalizeMongoTemplate(doc);
+      if (!template) return null;
+      return {
+        template,
+        createdAt: doc.createdAt ?? null,
+        updatedAt: doc.updatedAt ?? null,
+      };
+    })
+    .filter(Boolean);
+}
+
+function listTemplateVersionsAuthoritativeInMemory(templateId) {
+  const out = [];
+  for (const template of versions.values()) {
+    if (template.id !== templateId) continue;
+    out.push({ template: clone(template), createdAt: null, updatedAt: null });
+  }
+  return out.sort((a, b) => a.template.version - b.template.version);
+}
+
+export async function listTemplateRecordsAuthoritative() {
+  seedFromFiles();
+  if (!mongoReady()) {
+    return listTemplates().map((template) => ({
+      template,
+      createdAt: null,
+      updatedAt: null,
+    }));
+  }
+
+  const docs = await Template.find({}).sort({ id: 1, version: 1 }).lean();
+  const byId = new Map();
+  for (const doc of docs) {
+    const template = normalizeMongoTemplate(doc);
+    if (!template) continue;
+    const prior = byId.get(template.id);
+    if (!prior || template.version > prior.template.version) {
+      byId.set(template.id, {
+        template,
+        createdAt: doc.createdAt ?? null,
+        updatedAt: doc.updatedAt ?? null,
+      });
+    }
+  }
+
+  // Refresh the cache for every persisted id, then add ids that only exist in
+  // memory (for example a synchronous test/tooling-created template).
+  for (const [id, entry] of byId.entries()) {
+    installPersistedVersions(
+      id,
+      docs.filter((doc) => String(doc.id) === id),
+    );
+    // installPersistedVersions only keeps runtime fields; preserve the newest
+    // timestamps for callers that need dashboard ordering.
+    entry.template = getTemplateVersion(id) ?? entry.template;
+  }
+
+  const records = [...byId.values()];
+  for (const [id, version] of latest.entries()) {
+    if (byId.has(id)) continue;
+    const template = versions.get(key(id, version));
+    if (template) records.push({ template: clone(template), createdAt: null, updatedAt: null });
+  }
+  return records;
+}
+
+export async function selectDefaultTemplateAuthoritative() {
+  const records = await listTemplateRecordsAuthoritative();
+  const all = records
+    .map((record) => record.template)
+    .filter(
+      (template) =>
+        !isPrivateTemplate(template) &&
+        !isLegacyTemplate(template) &&
+        !isArchivedTemplate(template) &&
+        isPublishedTemplate(template),
+    );
+  const rank = (template) => {
+    const scope = templateScope(template);
+    if (scope === "platform") return 0;
+    if (scope === "college") return 1;
+    return 2;
+  };
+  all.sort(
+    (a, b) =>
+      rank(a) - rank(b) ||
+      String(a.id).localeCompare(String(b.id)) ||
+      Number(a.version) - Number(b.version),
+  );
+  return all[0] ?? null;
+}
+
 // Renderer-compatible doc shape { template }.
 export function getTemplateDoc(id, version) {
   const template = getTemplateVersion(id, version);
@@ -396,6 +574,16 @@ export async function createTemplatePersisted(data) {
   await ensureTemplatesLoaded();
   const template = buildTemplate(data);
   assertNewIdentity(template.id);
+  if (mongoReady()) {
+    // The cache can be cold/stale on another instance. The unique
+    // {id, version} index remains the final race-safe guard.
+    const existing = await Template.exists({ id: template.id });
+    if (existing) {
+      throw new TemplateConflictError(
+        `Template "${template.id}" already exists (update it for a new version)`,
+      );
+    }
+  }
   await persistNewVersion(template);
   commit(template);
   return clone(template);
@@ -403,15 +591,14 @@ export async function createTemplatePersisted(data) {
 
 export async function updateTemplatePersisted(id, patch) {
   await ensureTemplatesLoaded();
-  const current = rawLatest(id);
+  // Authoritative read: another API instance may have published a newer
+  // version since this instance hydrated its cache. Never fork from stale data.
+  const current = await getTemplateVersionAuthoritative(id);
   if (!current) return null;
 
   const next = buildNextVersion(current, patch);
-  const history = [];
-  for (let version = 1; version <= current.version; version += 1) {
-    const prior = versions.get(key(current.id, version));
-    if (prior) history.push(prior);
-  }
+  const versionRecords = await listTemplateVersionsAuthoritative(current.id);
+  const history = versionRecords.map((record) => record.template);
 
   await persistNewVersion(next, history);
   commit(next);

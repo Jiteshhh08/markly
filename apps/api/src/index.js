@@ -3,6 +3,7 @@ import dotenv from "dotenv";
 import express from "express";
 import helmet from "helmet";
 import mongoose from "mongoose";
+import { adminRouter } from "./routes/admin.js";
 import { assignmentsRouter } from "./routes/assignments.js";
 import { authRouter } from "./routes/auth.js";
 import { examplesRouter } from "./routes/examples.js";
@@ -12,6 +13,7 @@ import { templatesRouter } from "./routes/templates.js";
 import { authAttach, hydrateUsersFromMongo, requireAuthIfEnabled } from "./lib/auth.js";
 import { corsAllowList, corsOptions, isProduction } from "./lib/cors.js";
 import { csrfProtection } from "./lib/csrf.js";
+import { requirePersistedActor } from "./lib/roles.js";
 import { assetsDir, ensureDirs } from "./lib/storage.js";
 import { hydrateTemplatesFromMongo } from "./lib/templateStore.js";
 
@@ -30,6 +32,18 @@ app.use(helmet({ crossOriginResourcePolicy: false }));
 // browser origins. Evaluated per request so tests and env changes apply live.
 app.use(cors(corsOptions()));
 app.use(express.json({ limit: "1mb" }));
+
+// Dynamic API responses are user- and role-specific and must never be stored
+// or revalidated by a browser or shared cache. A cached 401 from before login
+// otherwise survives a refresh (the browser replays it with If-None-Match and
+// the server answers 304), making a valid session look logged out. Static
+// /assets keep their normal caching because they are content-addressed files.
+app.use("/api/", (_req, res, next) => {
+  res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
+  res.setHeader("Pragma", "no-cache");
+  res.setHeader("Expires", "0");
+  next();
+});
 
 // Minimal request logging (Phase 9 observability baseline).
 app.use((req, _res, next) => {
@@ -74,6 +88,16 @@ app.use(
   requireAuthIfEnabled,
   csrfProtection({ productionOnly: true }),
   templatesRouter,
+);
+// STAGE 3: admin routes are authenticated and authorized UNCONDITIONALLY.
+// requirePersistedActor reads the current MongoDB user (never JWT role claims)
+// and therefore still rejects anonymous callers when AUTH_REQUIRED=0. Cookie
+// mutations get the same production-only CSRF check as template mutations.
+app.use(
+  "/api/v1/admin",
+  requirePersistedActor,
+  csrfProtection({ productionOnly: true }),
+  adminRouter,
 );
 
 app.get("/", (_req, res) => {
