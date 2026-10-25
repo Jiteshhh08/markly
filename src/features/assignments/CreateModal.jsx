@@ -1,8 +1,16 @@
 // Creation modal (moved from App.jsx in the final stage). Collects the
 // assignment brief; generation itself is the App shell's job via onSubmit.
-import { useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Button, Field, ModalShell, cx, inputCls } from '../../components/ui.jsx'
 import { Icon, Spinner } from '../../components/icons.jsx'
+import {
+  buildTemplateChoices,
+  initialTemplateSelection,
+  isSelectionAvailable,
+  normalizeTemplate,
+  templateKey,
+  templateLabel,
+} from '../preferences/preferences.js'
 import { DIFFICULTIES, SUBJECTS } from './data.js'
 
 function FormSection({ index, title, hint, children }) {
@@ -20,23 +28,102 @@ function FormSection({ index, title, hint, children }) {
   )
 }
 
-export function CreateModal({ initial, templates = [], onClose, onSubmit }) {
-  const [form, setForm] = useState({
-    aim: initial?.aim ?? '',
-    description: initial?.description ?? '',
-    subject: initial?.subject ?? 'DBMS',
-    experimentNumber: initial?.experimentNumber ?? '',
-    technology: initial?.technology ?? '',
-    difficulty: initial?.difficulty ?? 'Intermediate',
-    templateId: initial?.templateId ?? '',
-    includeVivaTitle: initial?.includeVivaTitle ?? false,
-    typedConclusion: initial?.typedConclusion ?? true,
+export function CreateModal({
+  initial,
+  templates = [],
+  preferences = null,
+  onOpenPreferences,
+  onClose,
+  onSubmit,
+}) {
+  const choices = useMemo(
+    () => buildTemplateChoices({ templates, preferences }),
+    [templates, preferences],
+  )
+  const [form, setForm] = useState(() => {
+    const selection = initialTemplateSelection({
+      templates,
+      preferences,
+      requestedTemplateId: initial?.templateId,
+      requestedTemplateVersion: initial?.templateVersion,
+    })
+    return {
+      aim: initial?.aim ?? '',
+      description: initial?.description ?? '',
+      subject: initial?.subject ?? 'DBMS',
+      experimentNumber: initial?.experimentNumber ?? '',
+      technology: initial?.technology ?? '',
+      difficulty: initial?.difficulty ?? 'Intermediate',
+      templateId: selection.templateId,
+      templateVersion: selection.templateVersion,
+      includeVivaTitle: initial?.includeVivaTitle ?? false,
+      typedConclusion: initial?.typedConclusion ?? true,
+    }
   })
   const [error, setError] = useState('')
   const [submitting, setSubmitting] = useState(false)
 
+  const choiceKeys = useMemo(
+    () => choices.map((template) => templateKey(template)).join('|'),
+    [choices],
+  )
+
+  // Preferences can change while this modal is open (the stacked Preferences
+  // dialog). Keep the aim/description untouched, preserve a still-valid
+  // explicit choice, and otherwise fall back to the new preferred/default.
+  useEffect(() => {
+    setForm((previous) => {
+      if (isSelectionAvailable(previous, choices)) return previous
+      const next = initialTemplateSelection({
+        templates,
+        preferences,
+        requestedTemplateId: initial?.templateId,
+        requestedTemplateVersion: initial?.templateVersion,
+      })
+      if (
+        previous.templateId === next.templateId &&
+        String(previous.templateVersion) === String(next.templateVersion)
+      ) {
+        return previous
+      }
+      return {
+        ...previous,
+        templateId: next.templateId,
+        templateVersion: next.templateVersion,
+      }
+    })
+  }, [choiceKeys, choices, templates, preferences, initial?.templateId, initial?.templateVersion])
+
+  const selectedChoice = choices.find(
+    (template) =>
+      template.id === form.templateId &&
+      String(template.version) === String(form.templateVersion),
+  )
+  const branchDefault = normalizeTemplate(preferences?.branch?.defaultTemplate)
+  const preferred = preferences?.preferredTemplate?.available
+    ? normalizeTemplate(preferences.preferredTemplate)
+    : null
+  const isBranchDefault =
+    Boolean(branchDefault) &&
+    branchDefault.id === form.templateId &&
+    String(branchDefault.version) === String(form.templateVersion)
+  const isPreferred =
+    Boolean(preferred) &&
+    preferred.id === form.templateId &&
+    String(preferred.version) === String(form.templateVersion)
+
   function set(key, value) {
     setForm((f) => ({ ...f, [key]: value }))
+  }
+
+  function chooseTemplate(key) {
+    const chosen = choices.find((template) => templateKey(template) === key)
+    if (!chosen) return
+    setForm((previous) => ({
+      ...previous,
+      templateId: chosen.id,
+      templateVersion: String(chosen.version),
+    }))
   }
 
   function submit(e) {
@@ -48,6 +135,14 @@ export function CreateModal({ initial, templates = [], onClose, onSubmit }) {
     }
     if (form.experimentNumber && !/^\d{1,3}$/.test(form.experimentNumber.trim())) {
       setError('Experiment number must be between 1 and 999.')
+      return
+    }
+    if (choices.length === 0) {
+      setError('No eligible template is available. Update your college and branch preferences first.')
+      return
+    }
+    if (!selectedChoice) {
+      setError('Choose an eligible template for this assignment.')
       return
     }
     setError('')
@@ -132,12 +227,55 @@ export function CreateModal({ initial, templates = [], onClose, onSubmit }) {
         </FormSection>
 
         <FormSection index="03" title="Document settings" hint="Format and finishing options for the final document.">
-          <Field label="Template" htmlFor="f-template" hint="Department format. The active default is used when left empty.">
-            <select id="f-template" value={form.templateId} onChange={(e) => set('templateId', e.target.value)} className={inputCls}>
-              <option value="">Default (active template)</option>
-              {templates.map((t) => (
-                <option key={`${t.id}@${t.version}`} value={t.id}>
-                  {t.name} v{t.version}
+          <div className="flex flex-wrap items-center gap-2.5 rounded-lg bg-paper px-3 py-2.5 ring-1 ring-inset ring-line-soft">
+            <Icon name="grid" className="h-4 w-4 shrink-0 text-ink-400" />
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-[12.5px] font-semibold text-ink-800">
+                {preferences?.college && preferences?.branch
+                  ? `${preferences.college.name} · ${preferences.branch.name}`
+                  : preferences?.setupCompleted
+                    ? 'Private and platform templates'
+                    : 'College and branch not configured'}
+              </p>
+              <p className="mt-0.5 truncate text-[11.5px] text-ink-400">
+                {branchDefault
+                  ? `Branch default: ${branchDefault.name} v${branchDefault.version}`
+                  : 'No branch default set — choose an eligible template below.'}
+              </p>
+            </div>
+            {onOpenPreferences && (
+              <Button type="button" variant="secondary" size="sm" onClick={onOpenPreferences}>
+                Change
+              </Button>
+            )}
+          </div>
+          <Field
+            label="Template"
+            htmlFor="f-template"
+            hint={
+              isBranchDefault
+                ? 'Using your branch default, pinned to this exact version.'
+                : isPreferred
+                  ? 'Using your saved preference, pinned to this exact version.'
+                  : 'Choose any other eligible template. The exact version is stored with the assignment.'
+            }
+          >
+            <select
+              id="f-template"
+              value={selectedChoice ? templateKey(selectedChoice) : ''}
+              onChange={(e) => chooseTemplate(e.target.value)}
+              className={inputCls}
+              disabled={choices.length === 0}
+            >
+              {choices.length === 0 && (
+                <option value="">No eligible template — update your preferences first</option>
+              )}
+              {choices.map((t) => (
+                <option key={templateKey(t)} value={templateKey(t)}>
+                  {templateLabel(t, {
+                    branchDefault: t.isBranchDefault,
+                    preferred: t.isPreferred,
+                  })}
                 </option>
               ))}
             </select>

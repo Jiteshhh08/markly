@@ -35,6 +35,9 @@ export function actorFromUserDoc(doc) {
           collegeId: doc.preferences.collegeId ?? null,
           departmentId: doc.preferences.departmentId ?? null,
           preferredTemplateId: doc.preferences.preferredTemplateId ?? null,
+          preferredTemplateVersion: doc.preferences.preferredTemplateVersion ?? null,
+          setupCompletedAt: doc.preferences.setupCompletedAt ?? null,
+          updatedAt: doc.preferences.updatedAt ?? null,
         }
       : null,
   };

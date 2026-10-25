@@ -1,10 +1,18 @@
 import { useEffect, useRef, useState } from 'react'
-import { cx, ModalShell } from '../../components/ui.jsx'
+import { Button, cx, ModalShell } from '../../components/ui.jsx'
 import { Icon, Spinner } from '../../components/icons.jsx'
+import { branchDefaultTemplate, describePreferencesSummary } from '../preferences/preferences.js'
 import { displayNameOf } from './identity.js'
 import { UserAvatar } from './UserAvatar.jsx'
 
-export function ProfileMenu({ session, onLogout, onOpenProfile, direction = 'up', compact = false }) {
+export function ProfileMenu({
+  session,
+  onLogout,
+  onOpenProfile,
+  onOpenPreferences,
+  direction = 'up',
+  compact = false,
+}) {
   const [open, setOpen] = useState(false)
   const [busy, setBusy] = useState(false)
   const wrapRef = useRef(null)
@@ -89,6 +97,14 @@ export function ProfileMenu({ session, onLogout, onOpenProfile, direction = 'up'
             </button>
             <button
               role="menuitem"
+              onClick={() => { setOpen(false); onOpenPreferences?.() }}
+              className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-[13px] font-semibold text-ink-700 transition-colors duration-150 hover:bg-rail"
+            >
+              <Icon name="grid" className="h-4 w-4 text-ink-400" />
+              College &amp; branch
+            </button>
+            <button
+              role="menuitem"
               onClick={doLogout}
               disabled={busy}
               aria-label="Log out"
@@ -104,8 +120,9 @@ export function ProfileMenu({ session, onLogout, onOpenProfile, direction = 'up'
   )
 }
 
-export function ProfileModal({ session, onClose }) {
+export function ProfileModal({ session, preferences = null, onOpenPreferences, onClose }) {
   const name = displayNameOf(session)
+  const branchDefault = branchDefaultTemplate(preferences)
   return (
     <ModalShell title="Your profile" subtitle="Identity from your Markly sign-in." onClose={onClose}>
       <div className="flex items-center gap-3.5">
@@ -133,6 +150,31 @@ export function ProfileModal({ session, onClose }) {
           <dd className="mt-0.5 truncate text-[12.5px] font-semibold text-ink-700">{session?.id || '—'}</dd>
         </div>
       </dl>
+
+      <div className="mt-4 rounded-xl border border-line bg-white px-3.5 py-3">
+        <div className="flex flex-wrap items-start justify-between gap-2">
+          <div className="min-w-0">
+            <p className="text-[11px] font-bold uppercase tracking-[0.06em] text-ink-300">
+              College and branch
+            </p>
+            <p className="mt-0.5 truncate text-[13.5px] font-semibold text-ink-900">
+              {describePreferencesSummary(preferences)}
+            </p>
+            <p className="mt-0.5 text-[12px] text-ink-400">
+              {branchDefault
+                ? `Default template: ${branchDefault.name} v${branchDefault.version}`
+                : preferences?.setupCompleted
+                  ? 'No branch default — choose an eligible template when creating.'
+                  : 'Not configured yet.'}
+            </p>
+          </div>
+          {onOpenPreferences && (
+            <Button variant="secondary" size="sm" onClick={onOpenPreferences}>
+              {preferences?.setupCompleted ? 'Change' : 'Set up'}
+            </Button>
+          )}
+        </div>
+      </div>
     </ModalShell>
   )
 }

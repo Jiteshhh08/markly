@@ -20,6 +20,9 @@ import { TemplatesView } from './views/TemplatesView.jsx'
 import { AdminView } from './views/AdminView.jsx'
 import { DetailDrawer } from './features/assignments/DetailDrawer.jsx'
 import { CreateModal } from './features/assignments/CreateModal.jsx'
+import { PreferencesModal } from './features/preferences/PreferencesModal.jsx'
+import { describePreferencesSummary } from './features/preferences/preferences.js'
+import { fetchPreferences } from './features/preferences/preferencesApi.js'
 
 /* ---------------------------------- app ------------------------------------ */
 
@@ -48,6 +51,14 @@ export default function App() {
   const [templates, setTemplates] = useState([])
   const [loginOpen, setLoginOpen] = useState(false)
   const [profileOpen, setProfileOpen] = useState(false)
+  // STAGE 4: the persisted college/branch snapshot drives first-time setup and
+  // template preselection. It is fetched separately from /auth/me so the modal
+  // can show branch defaults without a second session bootstrap.
+  const [preferences, setPreferences] = useState(null)
+  const [preferencesLoading, setPreferencesLoading] = useState(false)
+  const [preferencesOpen, setPreferencesOpen] = useState(false)
+  const [preferencesStacked, setPreferencesStacked] = useState(false)
+  const [setupDismissed, setSetupDismissed] = useState(false)
   // Single source of truth for authentication: AuthContext owns user,
   // status, login/logout and the /me bootstrap. This component only reads.
   const auth = useAuth()
@@ -144,6 +155,77 @@ export default function App() {
     }
   }, [])
 
+  const openPreferences = useCallback((stacked = false) => {
+    setPreferencesStacked(Boolean(stacked))
+    if (!stacked) setProfileOpen(false)
+    setPreferencesOpen(true)
+  }, [])
+
+  const closePreferences = useCallback(() => {
+    setPreferencesOpen(false)
+    setPreferencesStacked(false)
+    // "Not now" on the first-time setup is a dismissal for this session: it
+    // must not immediately reopen just because the create modal changed.
+    if (preferences?.setupCompleted === false) setSetupDismissed(true)
+  }, [preferences])
+
+  const handlePreferencesSaved = useCallback(
+    async (saved) => {
+      setPreferences(saved)
+      setPreferencesOpen(false)
+      setSetupDismissed(true)
+      await Promise.all([auth.refreshSession(), refreshTemplates()])
+      pushToast('success', 'Preferences saved', describePreferencesSummary(saved))
+    },
+    [auth, refreshTemplates, pushToast],
+  )
+
+  // Fetch the persisted preference snapshot once auth is known. A 503 in
+  // memory-only mode is not an error the user should see: setup stays closed
+  // and the app keeps its legacy template behaviour.
+  useEffect(() => {
+    if (!auth.initialized) return undefined
+    if (!auth.isAuthenticated || !session?.id) {
+      setPreferences(null)
+      setPreferencesLoading(false)
+      return undefined
+    }
+    let alive = true
+    setPreferencesLoading(true)
+    fetchPreferences()
+      .then((data) => {
+        if (alive) setPreferences(data)
+      })
+      .catch(() => {
+        if (alive) setPreferences(null)
+      })
+      .finally(() => {
+        if (alive) setPreferencesLoading(false)
+      })
+    return () => {
+      alive = false
+    }
+  }, [auth.initialized, auth.isAuthenticated, session?.id])
+
+  // A fresh login may complete setup; dismissing it only lasts for that
+  // session, and a saved setup (setupCompleted=true) never reopens.
+  useEffect(() => {
+    setSetupDismissed(false)
+  }, [session?.id, auth.status])
+
+  const setupRequired = Boolean(
+    auth.isAuthenticated &&
+      !preferencesLoading &&
+      preferences &&
+      preferences.setupCompleted === false,
+  )
+
+  useEffect(() => {
+    if (!setupRequired || setupDismissed) return
+    setPreferencesStacked((current) => current || createOpen)
+    setPreferencesOpen(true)
+  }, [setupRequired, setupDismissed, createOpen])
+
   // Service health is session-independent: always check once on mount.
   useEffect(() => {
     let alive = true
@@ -210,6 +292,7 @@ export default function App() {
               technology: input.technology ?? '',
               difficulty: input.difficulty ?? 'Intermediate',
               templateId: input.templateId ?? '',
+              templateVersion: input.templateVersion != null ? String(input.templateVersion) : '',
               includeVivaTitle: input.includeVivaTitle ?? false,
               typedConclusion: input.typedConclusion ?? true,
               status: 'inprogress',
@@ -243,6 +326,9 @@ export default function App() {
     closeDrawer()
     setIssues([])
     setTemplates([])
+    setPreferences(null)
+    setPreferencesOpen(false)
+    setSetupDismissed(false)
     pushToast('success', 'Logged out', 'Session cleared.')
   }, [auth, closeDrawer, pushToast])
 
@@ -256,6 +342,7 @@ export default function App() {
       experimentNumber: source.experimentNumber ? Number(source.experimentNumber) : undefined,
       technology: (source.technology ?? '').trim() || undefined,
       templateId: source.templateId || undefined,
+      templateVersion: source.templateVersion ? Number(source.templateVersion) : undefined,
       difficulty: source.difficulty || undefined,
       includeVivaTitle: source.includeVivaTitle ?? source.record?.options?.includeVivaTitle ?? false,
       typedConclusion: source.typedConclusion ?? source.record?.options?.typedConclusion ?? true,
@@ -432,6 +519,7 @@ export default function App() {
         technology: form.technology.trim(),
         difficulty: form.difficulty,
         templateId: form.templateId || undefined,
+        templateVersion: form.templateVersion ? Number(form.templateVersion) : undefined,
         includeVivaTitle: form.includeVivaTitle,
         typedConclusion: form.typedConclusion,
         record: null,
@@ -663,6 +751,7 @@ export default function App() {
               session={session}
               onLogout={logout}
               onOpenProfile={() => setProfileOpen(true)}
+              onOpenPreferences={() => openPreferences(false)}
               direction="up"
             />
           ) : (
@@ -693,6 +782,7 @@ export default function App() {
                   session={session}
                   onLogout={logout}
                   onOpenProfile={() => setProfileOpen(true)}
+                  onOpenPreferences={() => openPreferences(false)}
                   direction="down"
                   compact
                 />
@@ -776,7 +866,7 @@ export default function App() {
               onRetryGen={runGeneration}
               onViewAll={() => setView('assignments')}
               onViewTemplates={() => setView('templates')}
-              onUseTemplate={(t) => { setPrefill({ templateId: t.id }); setCreateOpen(true) }}
+              onUseTemplate={(t) => { setPrefill({ templateId: t.id, templateVersion: t.version }); setCreateOpen(true) }}
               session={session}
               greeting={greeting}
             />
@@ -818,7 +908,7 @@ export default function App() {
               templates={templates}
               onRefresh={refreshTemplates}
               notify={pushToast}
-              onUse={(t) => { setPrefill({ templateId: t.id }); setCreateOpen(true) }}
+              onUse={(t) => { setPrefill({ templateId: t.id, templateVersion: t.version }); setCreateOpen(true) }}
               onAuthRequired={handleAuthRequired}
               session={session}
             />
@@ -856,11 +946,24 @@ export default function App() {
         <CreateModal
           initial={prefill}
           templates={templates}
+          preferences={preferences}
+          onOpenPreferences={() => openPreferences(true)}
           onClose={() => {
             setCreateOpen(false)
             setPrefill(null)
           }}
           onSubmit={createIssue}
+        />
+      )}
+
+      {preferencesOpen && (
+        <PreferencesModal
+          initialPreferences={preferences}
+          templates={templates}
+          firstTime={Boolean(preferences && preferences.setupCompleted === false)}
+          stacked={preferencesStacked}
+          onClose={closePreferences}
+          onSaved={handlePreferencesSaved}
         />
       )}
 
@@ -879,7 +982,12 @@ export default function App() {
       )}
 
       {profileOpen && session && (
-        <ProfileModal session={session} onClose={() => setProfileOpen(false)} />
+        <ProfileModal
+          session={session}
+          preferences={preferences}
+          onOpenPreferences={() => openPreferences(false)}
+          onClose={() => setProfileOpen(false)}
+        />
       )}
 
       {/* Toasts */}

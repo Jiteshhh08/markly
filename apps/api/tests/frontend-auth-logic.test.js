@@ -156,13 +156,25 @@ describe("STAGE3 auth machine transitions", () => {
         role: "college_admin",
         collegeAdminOf: ["college-a"],
         tenantIds: ["college-a"],
-        preferences: { collegeId: "college-a", departmentId: "branch-a1" },
+        preferences: {
+          collegeId: "college-a",
+          departmentId: "branch-a1",
+          preferredTemplateId: "tpl-a1",
+          preferredTemplateVersion: 2,
+          setupCompletedAt: "2026-01-02T03:04:05.000Z",
+        },
       },
     });
     assert.equal(state.user.role, "college_admin");
     assert.deepEqual(state.user.collegeAdminOf, ["college-a"]);
     assert.deepEqual(state.user.tenantIds, ["college-a"]);
-    assert.deepEqual(state.user.preferences, { collegeId: "college-a", departmentId: "branch-a1" });
+    assert.deepEqual(state.user.preferences, {
+      collegeId: "college-a",
+      departmentId: "branch-a1",
+      preferredTemplateId: "tpl-a1",
+      preferredTemplateVersion: 2,
+      setupCompletedAt: "2026-01-02T03:04:05.000Z",
+    });
 
     const ordinary = authReducer(createInitialAuthState(), {
       type: "LOGIN_OK",

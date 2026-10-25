@@ -28,11 +28,16 @@ const userSchema = new Schema(
     },
     // College ids this user may administer. Platform admins do not need entries.
     collegeAdminOf: { type: [String], default: [] },
-    // STAGE 4 will expose editing; STAGE 1 only persists the shape.
+    // STAGE 4: the user's saved college/branch and optional preferred template.
+    // `preferredTemplateVersion` pins the exact immutable version at save time.
+    // `setupCompletedAt` distinguishes "never configured" from the deliberate
+    // private-template-only path for users whose college is not listed.
     preferences: {
       collegeId: { type: String, default: null },
       departmentId: { type: String, default: null },
       preferredTemplateId: { type: String, default: null },
+      preferredTemplateVersion: { type: Number, default: null, min: 1 },
+      setupCompletedAt: Date,
       updatedAt: Date,
     },
     migrationStage1: Mixed,

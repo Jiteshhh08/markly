@@ -9,6 +9,7 @@ import { authRouter } from "./routes/auth.js";
 import { examplesRouter } from "./routes/examples.js";
 import { healthRouter } from "./routes/health.js";
 import { jobsRouter } from "./routes/jobs.js";
+import { preferencesRouter } from "./routes/preferences.js";
 import { templatesRouter } from "./routes/templates.js";
 import { authAttach, hydrateUsersFromMongo, requireAuthIfEnabled } from "./lib/auth.js";
 import { corsAllowList, corsOptions, isProduction } from "./lib/cors.js";
@@ -80,6 +81,16 @@ app.use("/api/v1/auth", authRouter);
 app.use("/api/v1/assignments", requireAuthIfEnabled, assignmentsRouter);
 app.use("/api/v1/examples", requireAuthIfEnabled, examplesRouter);
 app.use("/api/v1/jobs", requireAuthIfEnabled, jobsRouter);
+// STAGE 4: preferences are always private to the persisted actor. Unlike the
+// other user resources, this router is NEVER open in local mode: a saved
+// college/branch must identify a real MongoDB user, and anonymous callers get
+// 401 rather than an in-memory preference that disappears on restart.
+app.use(
+  "/api/v1/preferences",
+  requirePersistedActor,
+  csrfProtection({ productionOnly: true }),
+  preferencesRouter,
+);
 // STAGE 2: cookie-authenticated template mutations are CSRF-checked in
 // production. Bearer requests bypass the ambient-cookie check; non-production
 // keeps the historical behavior (and the existing test suite) intact.

@@ -115,6 +115,9 @@ authRouter.get("/me", async (req, res) => {
             collegeId: profile.preferences.collegeId ?? null,
             departmentId: profile.preferences.departmentId ?? null,
             preferredTemplateId: profile.preferences.preferredTemplateId ?? null,
+            preferredTemplateVersion: profile.preferences.preferredTemplateVersion ?? null,
+            setupCompletedAt: profile.preferences.setupCompletedAt ?? null,
+            updatedAt: profile.preferences.updatedAt ?? null,
           }
         : null,
     },

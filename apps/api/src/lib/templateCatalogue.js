@@ -107,6 +107,8 @@ function actorForExplicitScope(actor, template, scope) {
       collegeId: templateCollegeId(template) ?? scope.collegeId,
       departmentId: templateBranchId(template) ?? scope.departmentId ?? null,
       preferredTemplateId: actor.preferences?.preferredTemplateId ?? null,
+      preferredTemplateVersion: actor.preferences?.preferredTemplateVersion ?? null,
+      setupCompletedAt: actor.preferences?.setupCompletedAt ?? null,
     },
   };
 }

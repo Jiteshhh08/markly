@@ -20,6 +20,7 @@ export function recordToIssue(record) {
     technology: record.input?.technology ?? record.technology ?? '',
     difficulty: 'Intermediate',
     templateId: record.template?.id ?? '',
+    templateVersion: record.template?.version != null ? String(record.template.version) : '',
     includeVivaTitle: record.options?.includeVivaTitle ?? false,
     typedConclusion: record.options?.typedConclusion ?? true,
     status: 'done',
