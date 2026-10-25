@@ -128,7 +128,12 @@ const templateSchema = new Schema(
     archivedAt: Date,
     migrationStage1: Mixed,
   },
-  { timestamps: true },
+  // STAGE 2: templates are configuration documents whose runtime shape is
+  // owned by the store/seed, not by a narrow Mongoose projection. strict:false
+  // preserves every runtime field (including future additive fields) instead
+  // of silently dropping it on persistence. minimize:false keeps explicit
+  // empty objects so a persisted template round-trips without invented data.
+  { timestamps: true, strict: false, minimize: false },
 );
 
 templateSchema.index(

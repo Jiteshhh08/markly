@@ -2,7 +2,10 @@ import { assignmentContentSchema, generateInputSchema } from "../schemas.js";
 import { getRecord, nextAssignmentId, persistWithWarning, saveRecord } from "./assignmentStore.js";
 import { generateViaAiService } from "./aiClient.js";
 import { getSubjectProfile } from "./subjects.js";
-import { getDefaultTemplateDoc, getTemplateDoc } from "./templateStore.js";
+import {
+  resolvePinnedTemplate,
+  resolveTemplateForGeneration,
+} from "./templateResolution.js";
 
 // Background generation jobs (Phase 9).
 // Transport: BullMQ + Redis when REDIS_URL and BULLMQ_ENABLED=1 are set,
@@ -27,8 +30,8 @@ const ENQUEUE_TIMEOUT_MS = Number(process.env.BULLMQ_ENQUEUE_TIMEOUT_MS ?? 10000
 // In-process runner: the throw below is for the BullMQ worker path only.
 // Here the failure is already recorded on the job, so swallow the rejection
 // (an unhandled rejection would crash the process / fail the test run).
-function runInProcess(input, jobId, userId) {
-  runGenerationJob(input, jobId, userId).catch(() => {});
+function runInProcess(input, jobId, userId, template) {
+  runGenerationJob(input, jobId, userId, template).catch(() => {});
 }
 
 export async function closeQueue() {
@@ -85,7 +88,13 @@ async function ensureBullmq() {
     // to (see GENERATION_QUEUE above). Dormant in the default memory mode.
     bullmqWorker = new Worker(
       GENERATION_QUEUE,
-      async (bjob) => runGenerationJob(bjob.data.input, bjob.data.jobId, bjob.data.userId),
+      async (bjob) =>
+        runGenerationJob(
+          bjob.data.input,
+          bjob.data.jobId,
+          bjob.data.userId,
+          bjob.data.template ?? null,
+        ),
       { connection },
     );
     const worker = bullmqWorker;
@@ -103,10 +112,24 @@ async function ensureBullmq() {
   }
 }
 
-export async function createJob(type, input, userId = "anonymous") {
+export async function createJob(type, input, userId = "anonymous", options = {}) {
   if (type !== "generate") throw new Error('Unsupported job type (only "generate")');
   const parsed = generateInputSchema.safeParse(input ?? {});
   if (!parsed.success) throw new Error("Invalid input for generation job");
+  if (parsed.data.templateVersion != null && !parsed.data.templateId) {
+    throw new Error("templateVersion requires templateId");
+  }
+
+  // Resolve and pin the exact version at enqueue time. The immutable version
+  // is stored on the job so an edit while the job is queued cannot change its
+  // output. An explicit id never falls back to a default. Resolution errors
+  // keep their status/code so the HTTP route can return a precise, safe error.
+  const resolved = await resolveTemplateForGeneration({
+    templateId: parsed.data.templateId,
+    templateVersion: parsed.data.templateVersion,
+    actor: options.actor ?? null,
+  });
+
   counter += 1;
   const job = {
     id: `job_${Date.now()}_${counter}`,
@@ -116,6 +139,7 @@ export async function createJob(type, input, userId = "anonymous") {
     backend: queueBackend(),
     userId,
     input: parsed.data,
+    template: resolved.snapshot,
     assignmentId: null,
     error: null,
     createdAt: new Date().toISOString(),
@@ -124,7 +148,12 @@ export async function createJob(type, input, userId = "anonymous") {
   jobs.set(job.id, job);
   const q = await ensureBullmq();
   if (q) {
-    const add = q.add("generate", { jobId: job.id, input: job.input, userId: job.userId });
+    const add = q.add("generate", {
+      jobId: job.id,
+      input: job.input,
+      userId: job.userId,
+      template: job.template,
+    });
     // Swallow the loser's late rejection (the race below already moved on).
     add.catch(() => {});
     const timeout = new Promise((_, reject) =>
@@ -134,22 +163,29 @@ export async function createJob(type, input, userId = "anonymous") {
       await Promise.race([add, timeout]);
     } catch (err) {
       console.warn("[queue] BullMQ enqueue failed, running in-process:", String(err).slice(0, 200));
-      setImmediate(() => runInProcess(job.input, job.id, job.userId));
+      setImmediate(() => runInProcess(job.input, job.id, job.userId, job.template));
     }
   } else {
-    setImmediate(() => runInProcess(job.input, job.id, job.userId));
+    setImmediate(() => runInProcess(job.input, job.id, job.userId, job.template));
   }
   return job;
 }
 
-export async function runGenerationJob(input, jobId, userId = "anonymous") {
+export async function runGenerationJob(input, jobId, userId = "anonymous", pinnedTemplate = null) {
   const job = jobs.get(jobId);
   if (!job) throw new Error("Job not found");
   const aiBase = process.env.AI_SERVICE_URL ?? "http://127.0.0.1:8001";
   try {
+    const resolved = pinnedTemplate
+      ? await resolvePinnedTemplate(pinnedTemplate)
+      : await resolveTemplateForGeneration({
+          templateId: input.templateId,
+          templateVersion: input.templateVersion,
+          actor: null,
+        });
+
     setStatus(job, "researching", { progress: 10 });
     const profile = getSubjectProfile(input.subject);
-    const seed = (input.templateId && getTemplateDoc(input.templateId)) || getDefaultTemplateDoc();
     setStatus(job, "generating", { progress: 40 });
     const { includeVivaTitle, typedConclusion, ...aiInput } = input;
     const result = await generateViaAiService(aiInput, aiBase);
@@ -162,9 +198,7 @@ export async function runGenerationJob(input, jobId, userId = "anonymous") {
       userId,
       input,
       subjectProfile: profile,
-      template: seed?.template
-        ? { id: seed.template.id, version: seed.template.version, name: seed.template.name }
-        : { id: "default-v1", version: 1 },
+      template: resolved.snapshot,
       content: content.data,
       options: {
         includeVivaTitle: input.includeVivaTitle ?? false,

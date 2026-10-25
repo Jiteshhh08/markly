@@ -1,5 +1,5 @@
 import { COOKIE_NAME, verifyToken } from "./auth.js";
-import { corsAllowList } from "./cors.js";
+import { corsAllowList, isProduction } from "./cors.js";
 
 // STAGE 1: CSRF protection for cookie-authenticated mutations.
 //
@@ -92,8 +92,12 @@ export function isCsrfOriginAllowed(req, env = process.env) {
   return isSameOrigin(req, origin);
 }
 
-export function csrfProtection({ env = process.env } = {}) {
+export function csrfProtection({ env = process.env, productionOnly = false } = {}) {
   return (req, res, next) => {
+    // STAGE 2 mounts this on existing template mutations in production only.
+    // The env object is read per request, so runtime configuration changes and
+    // tests are honored without rebuilding the middleware.
+    if (productionOnly && !isProduction(env)) return next();
     if (SAFE_METHODS.has(String(req.method ?? "GET").toUpperCase())) return next();
     if (!cookieAuthenticated(req)) return next();
 

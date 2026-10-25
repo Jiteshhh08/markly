@@ -27,6 +27,9 @@ export function actorFromUserDoc(doc) {
     collegeAdminOf: Array.isArray(doc.collegeAdminOf)
       ? doc.collegeAdminOf.map(String)
       : [],
+    // College membership (not administration). Catalogue queries may use an
+    // explicit college scope only when this membership is present.
+    tenantIds: Array.isArray(doc.tenantIds) ? doc.tenantIds.map(String) : [],
     preferences: doc.preferences
       ? {
           collegeId: doc.preferences.collegeId ?? null,

@@ -67,9 +67,10 @@ export function planSeed({ tenants = [], departments = [], templates = [] } = {}
   const defs = seedDefinitions();
   const tenantExists = tenants.some((doc) => doc.id === defs.tenant.id);
   const departmentExists = departments.some((doc) => doc.id === defs.department.id);
-  const templateExists = templates.some(
-    (doc) => doc.id === defs.template.id && Number(doc.version ?? 1) === Number(defs.template.version ?? 1),
-  );
+  // STAGE 2: ANY version of the seed template id means the install already has
+  // the TCET template. Never insert v1 over an administrator-edited v1 or next
+  // to a newer published version; existing installs keep their changes.
+  const templateExists = templates.some((doc) => doc.id === defs.template.id);
 
   return {
     tenant: { action: tenantExists ? "skip" : "create", id: defs.tenant.id },

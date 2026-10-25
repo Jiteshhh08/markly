@@ -2,12 +2,33 @@ import { Router } from "express";
 import { SECTION_NAMES, assignmentContentSchema, generateInputSchema, sectionValueSchemas } from "../schemas.js";
 import { generateViaAiService, regenerateSectionViaAiService } from "../lib/aiClient.js";
 import { getSubjectProfile } from "../lib/subjects.js";
-import { getDefaultTemplateDoc, getTemplateDoc } from "../lib/templateStore.js";
+import {
+  TemplateResolutionError,
+  requestActor,
+  resolveAssignmentTemplate,
+  resolveTemplateForGeneration,
+} from "../lib/templateResolution.js";
 import { findRecord, listRecordsFor, nextAssignmentId, ownerId, persistWithWarning, saveRecord } from "../lib/assignmentStore.js";
 import { renderHtml } from "../render/html.js";
 import { sendError } from "../lib/errors.js";
 
 export const assignmentsRouter = Router();
+
+// Resolve the exact immutable template version stored on an assignment.
+// Missing identity/version or a deleted historical version is an explicit
+// error; exports never fall back to the latest or a server default.
+async function exactTemplateFor(record, res) {
+  try {
+    return await resolveAssignmentTemplate(record);
+  } catch (err) {
+    if (err instanceof TemplateResolutionError) {
+      sendError(res, err.status, err.message);
+      return null;
+    }
+    sendError(res, 503, "Template resolution is unavailable. Please try again.", err);
+    return null;
+  }
+}
 
 // Records live in the shared assignment store (Mongo persistence is best-effort; see index.js).
 
@@ -26,11 +47,28 @@ assignmentsRouter.post("/generate", async (req, res) => {
   // Presentation flags stay Node-side (rendering only); the AI service gets content input alone.
   const { includeVivaTitle, typedConclusion, ...aiInput } = input;
   const options = { includeVivaTitle: includeVivaTitle ?? false, typedConclusion: typedConclusion ?? true };
-  // Template lookup from tenant seeds (requested templateId or the active default).
-  const seed = (input.templateId && getTemplateDoc(input.templateId)) || getDefaultTemplateDoc();
-  const template = seed
-    ? { id: seed.template.id, version: seed.template.version, name: seed.template.name }
-    : { id: "default-v1", version: 1, note: "No tenant template seeds found" };
+
+  if (input.templateVersion != null && !input.templateId) {
+    return sendError(res, 400, "templateVersion requires templateId");
+  }
+
+  // Resolve and pin the exact template version BEFORE calling the AI service.
+  // An explicit templateId never falls back to a default or another college.
+  let resolvedTemplate;
+  try {
+    const actor = await requestActor(req);
+    resolvedTemplate = await resolveTemplateForGeneration({
+      templateId: input.templateId,
+      templateVersion: input.templateVersion,
+      actor,
+    });
+  } catch (err) {
+    if (err instanceof TemplateResolutionError) {
+      return sendError(res, err.status, err.message);
+    }
+    return sendError(res, 503, "Template resolution is unavailable. Please try again.", err);
+  }
+  const template = resolvedTemplate.snapshot;
 
   const aiBase = process.env.AI_SERVICE_URL ?? "http://127.0.0.1:8001";
   try {
@@ -113,8 +151,9 @@ assignmentsRouter.delete("/:id", async (req, res) => {
 assignmentsRouter.get("/:id/html", async (req, res) => {
   const record = await findRecord(req.params.id, ownerId(req));
   if (!record) return res.status(404).json({ error: "Not found" });
-  const seed = getTemplateDoc(record.template?.id) || getDefaultTemplateDoc();
-  res.type("html").send(renderHtml(record.content, seed, record.options));
+  const resolved = await exactTemplateFor(record, res);
+  if (!resolved) return undefined;
+  return res.type("html").send(renderHtml(record.content, resolved.doc, record.options));
 });
 
 // Presentation options can change after generation (viva heading, typed/handwritten conclusion).
@@ -193,10 +232,11 @@ assignmentsRouter.put("/:id", async (req, res) => {
 assignmentsRouter.get("/:id/docx", async (req, res) => {
   const record = await findRecord(req.params.id, ownerId(req));
   if (!record) return res.status(404).json({ error: "Not found" });
+  const resolved = await exactTemplateFor(record, res);
+  if (!resolved) return undefined;
   try {
     const { renderDocx } = await import("../render/docx.js");
-    const seed = getTemplateDoc(record.template?.id) || getDefaultTemplateDoc();
-    const buf = await renderDocx(record.content, seed, record.options);
+    const buf = await renderDocx(record.content, resolved.doc, record.options);
     res.setHeader("content-type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
     res.setHeader("content-disposition", `attachment; filename="assignment-${record.id}.docx"`);
     return res.send(Buffer.from(buf));
@@ -209,10 +249,14 @@ assignmentsRouter.get("/:id/docx", async (req, res) => {
 assignmentsRouter.get("/:id/latex", async (req, res) => {
   const record = await findRecord(req.params.id, ownerId(req));
   if (!record) return res.status(404).json({ error: "Not found" });
+  const resolved = await exactTemplateFor(record, res);
+  if (!resolved) return undefined;
   if (record.latexOverride) return res.json({ latex: record.latexOverride, edited: true });
   const { renderLatex } = await import("../render/latex.js");
-  const seed = getTemplateDoc(record.template?.id) || getDefaultTemplateDoc();
-  return res.json({ latex: renderLatex(record.content, seed, record.options), edited: false });
+  return res.json({
+    latex: renderLatex(record.content, resolved.doc, record.options),
+    edited: false,
+  });
 });
 
 // Phase 4: save user-edited LaTeX (treated as untrusted input to the compiler).
@@ -234,6 +278,8 @@ assignmentsRouter.put("/:id/latex", async (req, res) => {
 assignmentsRouter.post("/:id/pdf", async (req, res) => {
   const record = await findRecord(req.params.id, ownerId(req));
   if (!record) return res.status(404).json({ error: "Not found" });
+  const resolved = await exactTemplateFor(record, res);
+  if (!resolved) return undefined;
   try {
     const [{ renderLatex }, { compileLatexToPdf, checkCompiler }] = await Promise.all([
       import("../render/latex.js"),
@@ -244,9 +290,8 @@ assignmentsRouter.post("/:id/pdf", async (req, res) => {
       console.error(`[api] pdf preflight failed for ${record.id}:`, preflight.error);
       return res.status(502).json({ error: "The PDF service is unavailable right now. Please try again later." });
     }
-    const seed = getTemplateDoc(record.template?.id) || getDefaultTemplateDoc();
-    const tex = record.latexOverride ?? renderLatex(record.content, seed, record.options);
-    const out = await compileLatexToPdf(tex, seed);
+    const tex = record.latexOverride ?? renderLatex(record.content, resolved.doc, record.options);
+    const out = await compileLatexToPdf(tex, resolved.doc);
     if (!out.ok) {
       console.error(`[api] pdf compile failed for ${record.id}:`, out.error, out.log);
       return res.status(502).json({ error: "The PDF couldn't be built. Please try again." });

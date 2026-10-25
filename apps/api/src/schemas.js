@@ -8,6 +8,10 @@ export const generateInputSchema = z.object({
   experimentNumber: z.number().int().min(1).max(999).optional().nullable(),
   technology: z.string().trim().max(64).optional().nullable(),
   templateId: z.string().trim().max(64).optional().nullable(),
+  // STAGE 2: pin an exact immutable template version for this generation.
+  // When omitted with templateId, the latest usable version is resolved once
+  // and the exact number is stored on the assignment.
+  templateVersion: z.number().int().min(1).optional().nullable(),
   difficulty: z.string().trim().max(32).optional().nullable(),
   additionalInstructions: z.string().trim().max(2000).optional().nullable(),
   // Presentation flags (never affect LLM content, only rendering):

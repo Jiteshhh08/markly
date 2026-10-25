@@ -11,7 +11,9 @@ import { jobsRouter } from "./routes/jobs.js";
 import { templatesRouter } from "./routes/templates.js";
 import { authAttach, hydrateUsersFromMongo, requireAuthIfEnabled } from "./lib/auth.js";
 import { corsAllowList, corsOptions, isProduction } from "./lib/cors.js";
+import { csrfProtection } from "./lib/csrf.js";
 import { assetsDir, ensureDirs } from "./lib/storage.js";
+import { hydrateTemplatesFromMongo } from "./lib/templateStore.js";
 
 dotenv.config();
 
@@ -64,7 +66,15 @@ app.use("/api/v1/auth", authRouter);
 app.use("/api/v1/assignments", requireAuthIfEnabled, assignmentsRouter);
 app.use("/api/v1/examples", requireAuthIfEnabled, examplesRouter);
 app.use("/api/v1/jobs", requireAuthIfEnabled, jobsRouter);
-app.use("/api/v1/templates", requireAuthIfEnabled, templatesRouter);
+// STAGE 2: cookie-authenticated template mutations are CSRF-checked in
+// production. Bearer requests bypass the ambient-cookie check; non-production
+// keeps the historical behavior (and the existing test suite) intact.
+app.use(
+  "/api/v1/templates",
+  requireAuthIfEnabled,
+  csrfProtection({ productionOnly: true }),
+  templatesRouter,
+);
 
 app.get("/", (_req, res) => {
   res.json({ service: "Markly-api", docs: "/api/v1/health" });
@@ -107,6 +117,10 @@ async function main() {
       // User docs without a passwordHash are skipped (re-registration needed).
       const warmed = await hydrateUsersFromMongo();
       console.log(`[api] rehydrated ${warmed} user(s) from MongoDB`);
+      // STAGE 2: load persisted template versions before accepting requests.
+      // The JSON seed remains a built-in fallback for IDs not yet persisted.
+      const templates = await hydrateTemplatesFromMongo();
+      console.log(`[api] rehydrated ${templates.count} template version(s) from MongoDB`);
     } catch (err) {
       console.warn("[api] MongoDB connection failed, continuing in-memory:", String(err));
     }

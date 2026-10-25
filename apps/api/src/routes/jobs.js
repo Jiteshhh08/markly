@@ -1,6 +1,8 @@
 import { Router } from "express";
 import { createJob, getAssignmentForJob, getJob, listJobsFor } from "../lib/queue.js";
 import { ownerId } from "../lib/assignmentStore.js";
+import { sendError } from "../lib/errors.js";
+import { requestActor } from "../lib/templateResolution.js";
 
 export const jobsRouter = Router();
 
@@ -25,10 +27,29 @@ jobsRouter.get("/", (req, res) => {
 
 // Phase 9: enqueue a background generation job (202 + pollable status).
 jobsRouter.post("/", async (req, res) => {
+  let actor;
   try {
-    const job = await createJob(req.body?.type ?? "generate", req.body?.input ?? {}, ownerId(req));
+    actor = await requestActor(req);
+  } catch (err) {
+    return sendError(res, 503, "Authorization is temporarily unavailable", err);
+  }
+
+  try {
+    const job = await createJob(
+      req.body?.type ?? "generate",
+      req.body?.input ?? {},
+      ownerId(req),
+      { actor },
+    );
     return res.status(202).json({ job });
   } catch (err) {
+    if (err?.name === "TemplateResolutionError") {
+      if (err.status >= 500) return sendError(res, err.status, err.message, err);
+      return res.status(err.status ?? 400).json({ error: err.message });
+    }
+    if (err?.name === "TemplatePersistenceError" || err?.status === 503) {
+      return sendError(res, 503, "Template storage is unavailable. Please try again.", err);
+    }
     return res.status(400).json({ error: String(err.message ?? err) });
   }
 });
