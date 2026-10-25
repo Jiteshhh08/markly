@@ -1,5 +1,12 @@
 import { Router } from "express";
-import { clearSessionCookie, getProfileByEmail, loginUser, registerUser, setSessionCookie } from "../lib/auth.js";
+import {
+  clearSessionCookie,
+  getProfileByEmail,
+  loginUser,
+  registerUser,
+  setSessionCookie,
+  updateProfileForUser,
+} from "../lib/auth.js";
 import { sendError } from "../lib/errors.js";
 
 export const authRouter = Router();
@@ -11,6 +18,11 @@ const SAFE_AUTH_MESSAGES = new Set([
   "Password must be at least 8 chars",
   "Email already registered",
   "Invalid email or password",
+  "No profile fields to update",
+  "Name must be a string",
+  "Name is too long",
+  "Avatar URL must be a string",
+  "Avatar URL is too long",
 ]);
 
 function authError(res, status, err, fallback) {
@@ -46,6 +58,21 @@ authRouter.post("/login", async (req, res) => {
 authRouter.post("/logout", (_req, res) => {
   clearSessionCookie(res);
   return res.json({ ok: true });
+});
+
+// Public profile updates are deliberately narrow: name/avatar only. Role and
+// college scope are never accepted from this route, even if a client sends
+// them. Registration is similarly role-free.
+authRouter.patch("/profile", async (req, res) => {
+  if (!req.user) return res.status(401).json({ error: "Not authenticated" });
+  try {
+    const user = await updateProfileForUser(req.user.sub, req.body ?? {});
+    return res.json({ user });
+  } catch (err) {
+    const msg = String(err?.message ?? "");
+    if (SAFE_AUTH_MESSAGES.has(msg)) return res.status(400).json({ error: msg });
+    return sendError(res, 400, "Couldn't update the profile. Please try again.", msg);
+  }
 });
 
 authRouter.get("/me", async (req, res) => {

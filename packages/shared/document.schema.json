@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://markly.local/schemas/document/v1.json",
+  "title": "AssignmentDocument",
+  "description": "STAGE 1 canonical presentation document. Academic content is an opaque snapshot validated by assignment.schema.json; this schema deliberately has no Qwen/Pydantic generation fields and never constrains aim/theory/steps. Layout is a snapshot of the template at generation time, not a live template reference.",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "assignmentId",
+    "content",
+    "template",
+    "layout",
+    "presentation",
+    "normalization"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "assignmentId": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "ownerUserId": { "type": ["string", "null"], "maxLength": 128 },
+    "collegeId": { "type": ["string", "null"], "maxLength": 128 },
+    "branchId": { "type": ["string", "null"], "maxLength": 128 },
+    "content": {
+      "type": ["object", "null"],
+      "description": "Opaque academic-content snapshot. Validated by the independent assignment.schema.json, never by this document/layout schema."
+    },
+    "template": {
+      "type": ["object", "null"],
+      "description": "Template identity/ownership snapshot. Null means the legacy record had no usable snapshot; no id/version is invented.",
+      "required": ["id", "version"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "version": { "type": ["integer", "null"], "minimum": 1 },
+        "name": { "type": ["string", "null"], "maxLength": 200 },
+        "scope": { "enum": ["platform", "college", "private", "legacy"] },
+        "collegeId": { "type": ["string", "null"], "maxLength": 128 },
+        "branchId": { "type": ["string", "null"], "maxLength": 128 }
+      },
+      "additionalProperties": false
+    },
+    "layout": {
+      "type": ["object", "null"],
+      "description": "Explicit template layout snapshot. Missing template data stays null; defaults are never invented during normalization.",
+      "properties": {
+        "page": { "type": ["object", "null"] },
+        "typography": { "type": ["object", "null"] },
+        "header": { "type": ["object", "null"] },
+        "footer": { "type": ["object", "null"] },
+        "watermark": { "type": ["object", "null"] },
+        "facultyTable": { "type": ["object", "null"] },
+        "assets": { "type": ["object", "null"] },
+        "requiredSections": { "type": "array", "items": { "type": "string" } },
+        "studentMetadataFields": { "type": "array", "items": { "type": "string" } }
+      },
+      "additionalProperties": false
+    },
+    "presentation": {
+      "type": "object",
+      "required": ["includeVivaTitle", "typedConclusion"],
+      "properties": {
+        "includeVivaTitle": { "type": "boolean" },
+        "typedConclusion": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "normalization": {
+      "type": "object",
+      "required": [
+        "source",
+        "legacy",
+        "missingContent",
+        "missingTemplate",
+        "missingLayout"
+      ],
+      "properties": {
+        "source": { "enum": ["current", "legacy", "unknown"] },
+        "legacy": { "type": "boolean" },
+        "missingContent": { "type": "boolean" },
+        "missingTemplate": { "type": "boolean" },
+        "missingVersion": { "type": "boolean" },
+        "missingLayout": { "type": "boolean" },
+        "defaultsApplied": { "type": "array", "items": { "type": "string" } }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

@@ -10,6 +10,7 @@ import { healthRouter } from "./routes/health.js";
 import { jobsRouter } from "./routes/jobs.js";
 import { templatesRouter } from "./routes/templates.js";
 import { authAttach, hydrateUsersFromMongo, requireAuthIfEnabled } from "./lib/auth.js";
+import { corsAllowList, corsOptions, isProduction } from "./lib/cors.js";
 import { assetsDir, ensureDirs } from "./lib/storage.js";
 
 dotenv.config();
@@ -22,27 +23,10 @@ process.on("unhandledRejection", (err) => {
 const app = express();
 app.use(helmet({ crossOriginResourcePolicy: false }));
 // credentials:true + origin policy: ALLOWED_ORIGINS (comma-separated) locks
-// the API to known frontends. Unset = reflect any origin (local-dev default;
-// the httpOnly session cookie still only goes to callers the browser trusts).
-// Evaluated per request so tests and zero-downtime env changes apply live.
-function corsAllowList() {
-  return String(process.env.ALLOWED_ORIGINS ?? "")
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
-}
-
-app.use(
-  cors({
-    origin: (origin, cb) => {
-      const allow = corsAllowList();
-      if (allow.length === 0) return cb(null, true);
-      if (!origin) return cb(null, true); // same-origin / non-browser (curl, health checks)
-      return allow.includes(origin) ? cb(null, true) : cb(null, false);
-    },
-    credentials: true,
-  }),
-);
+// the API to known frontends. Unset = reflect any origin outside production
+// (local-dev default); in production an empty allowlist FAILS CLOSED for
+// browser origins. Evaluated per request so tests and env changes apply live.
+app.use(cors(corsOptions()));
 app.use(express.json({ limit: "1mb" }));
 
 // Minimal request logging (Phase 9 observability baseline).
@@ -104,9 +88,14 @@ app.use((err, _req, res, _next) => {
 const PORT = Number(process.env.PORT ?? 4000);
 
 async function main() {
-  if (process.env.AUTH_REQUIRED === "1" && corsAllowList().length === 0) {
+  if (isProduction() && corsAllowList().length === 0) {
+    console.error(
+      "[api] NODE_ENV=production but ALLOWED_ORIGINS is unset — browser origins are BLOCKED. " +
+        "Set ALLOWED_ORIGINS=https://your-frontend.",
+    );
+  } else if (process.env.AUTH_REQUIRED === "1" && corsAllowList().length === 0) {
     console.warn(
-      "[api] AUTH_REQUIRED=1 but ALLOWED_ORIGINS is unset — CORS reflects any origin. " +
+      "[api] AUTH_REQUIRED=1 but ALLOWED_ORIGINS is unset — CORS reflects any origin outside production. " +
         "Set ALLOWED_ORIGINS=https://your-frontend in production.",
     );
   }
