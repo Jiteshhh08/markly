@@ -8,7 +8,7 @@ import { Icon, Spinner } from '../../components/icons.jsx'
 import { CodeBlock, SectionHeading, SubjectTag } from './AssignmentUI.jsx'
 import { EDITABLE_SECTIONS, fullDate, priorityOf, sectionFromText, sectionToText, timeAgo, uiStatus } from './data.js'
 
-export function DetailDrawer({ issue, shown, onClose, onRetry, onDelete, onDownload, onOpenPreview, onRecordUpdate, onMarkStale, onAuthRequired, apiBase }) {
+export function DetailDrawer({ issue, shown, onClose, onRetry, onDelete, onDownload, onOpenPreview, onOpenStudio, onRecordUpdate, onMarkStale, onAuthRequired, apiBase }) {
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [showRawJson, setShowRawJson] = useState(false)
   const [exportBusy, setExportBusy] = useState('')
@@ -269,6 +269,9 @@ export function DetailDrawer({ issue, shown, onClose, onRetry, onDelete, onDownl
           <span className="rounded-md bg-rail px-2 py-1 text-[11px] font-bold tracking-wide text-ink-500">{issue.key}</span>
           <StatusBadge status={uiStatus(issue)} />
           <span className="ml-auto flex items-center gap-1">
+            <button title="Visual document editor" aria-label="Visual document editor" onClick={onOpenStudio} disabled={!issue.record || stale} className="inline-flex h-9 w-9 items-center justify-center rounded-lg text-ink-500 transition-colors duration-150 hover:bg-rail hover:text-ink-900 disabled:opacity-40">
+              <Icon name="file" className="h-4 w-4" />
+            </button>
             <button title="Download document" aria-label="Download document" onClick={onDownload} disabled={!issue.record || stale} className="inline-flex h-9 w-9 items-center justify-center rounded-lg text-ink-500 transition-colors duration-150 hover:bg-rail hover:text-ink-900 disabled:opacity-40">
               <Icon name="download" className="h-4 w-4" />
             </button>
@@ -614,6 +617,10 @@ export function DetailDrawer({ issue, shown, onClose, onRetry, onDelete, onDownl
                     <iframe title={`Document preview for ${issue.key}`} key={previewKey} src={`${apiBase}/api/v1/assignments/${issue.record.id}/html`} className="h-[420px] w-full bg-white" />
                   </div>
                   <div className="mt-2 flex flex-wrap gap-2">
+                    <Button variant="secondary" size="sm" onClick={onOpenStudio}>
+                      <Icon name="file" className="h-4 w-4" />
+                      Visual editor
+                    </Button>
                     <Button variant="secondary" size="sm" onClick={onDownload}>
                       <Icon name="download" className="h-4 w-4" />
                       Download HTML

@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://markly.local/schemas/document/v1.json",
+  "$id": "https://markly.local/schemas/document/v2.json",
   "title": "AssignmentDocument",
-  "description": "STAGE 1 canonical presentation document. Academic content is an opaque snapshot validated by assignment.schema.json; this schema deliberately has no Qwen/Pydantic generation fields and never constrains aim/theory/steps. Layout is a snapshot of the template at generation time, not a live template reference.",
+  "description": "STAGE 5 canonical editable document. Academic content is an opaque snapshot validated by assignment.schema.json; blocks are the ordered, validated visual body. Template/layout identity stays separate and is never overwritten by the studio. This schema deliberately has no Qwen/Pydantic generation fields.",
   "type": "object",
   "required": [
     "schemaVersion",
@@ -11,10 +11,12 @@
     "template",
     "layout",
     "presentation",
+    "blocks",
+    "revision",
     "normalization"
   ],
   "properties": {
-    "schemaVersion": { "const": 1 },
+    "schemaVersion": { "const": 2 },
     "assignmentId": { "type": "string", "minLength": 1, "maxLength": 128 },
     "ownerUserId": { "type": ["string", "null"], "maxLength": 128 },
     "collegeId": { "type": ["string", "null"], "maxLength": 128 },
@@ -62,6 +64,61 @@
       },
       "additionalProperties": false
     },
+    "blocks": {
+      "type": "array",
+      "maxItems": 500,
+      "description": "Ordered student-editable body. Template-locked headers/watermarks stay in `layout`, never in this array.",
+      "items": {
+        "type": "object",
+        "required": ["id", "type", "content"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1, "maxLength": 128 },
+          "type": {
+            "enum": [
+              "title",
+              "experimentNumber",
+              "heading",
+              "subheading",
+              "paragraph",
+              "bulletList",
+              "numberedList",
+              "code",
+              "spacer",
+              "pageBreak"
+            ]
+          },
+          "content": {
+            "type": "object",
+            "description": "Type-specific content: text for text blocks, items for lists, text/language for code, height for spacer, empty for pageBreak."
+          },
+          "style": {
+            "type": "object",
+            "properties": {
+              "align": { "enum": ["left", "center", "right", "justify"] },
+              "fontSize": { "type": "integer", "minimum": 8, "maximum": 48 },
+              "spacingBefore": { "type": "integer", "minimum": 0, "maximum": 120 },
+              "spacingAfter": { "type": "integer", "minimum": 0, "maximum": 120 },
+              "indent": { "type": "integer", "minimum": 0, "maximum": 120 }
+            },
+            "additionalProperties": false
+          },
+          "source": {
+            "type": "object",
+            "description": "Generated-block provenance. Regeneration replaces only blocks with a matching source.section.",
+            "properties": {
+              "section": {
+                "enum": ["title", "experimentNumber", "aim", "objectives", "theory", "steps", "conclusion"]
+              },
+              "stepNumber": { "type": "integer", "minimum": 1, "maximum": 999 }
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "revision": { "type": "integer", "minimum": 0 },
+    "documentUpdatedAt": { "type": ["string", "null"] },
     "normalization": {
       "type": "object",
       "required": [
@@ -78,6 +135,7 @@
         "missingTemplate": { "type": "boolean" },
         "missingVersion": { "type": "boolean" },
         "missingLayout": { "type": "boolean" },
+        "missingBlocks": { "type": "boolean" },
         "defaultsApplied": { "type": "array", "items": { "type": "string" } }
       },
       "additionalProperties": false

@@ -20,6 +20,7 @@ import { TemplatesView } from './views/TemplatesView.jsx'
 import { AdminView } from './views/AdminView.jsx'
 import { DetailDrawer } from './features/assignments/DetailDrawer.jsx'
 import { CreateModal } from './features/assignments/CreateModal.jsx'
+import { DocumentStudio } from './features/studio/DocumentStudio.jsx'
 import { PreferencesModal } from './features/preferences/PreferencesModal.jsx'
 import { describePreferencesSummary } from './features/preferences/preferences.js'
 import { fetchPreferences } from './features/preferences/preferencesApi.js'
@@ -44,6 +45,9 @@ export default function App() {
   const [drawerKey, setDrawerKey] = useState(null)
   const [drawerShown, setDrawerShown] = useState(false)
   const drawerTimer = useRef(null)
+  // STAGE 5: the visual studio overlays the drawer so the review panel (and
+  // its export actions) remains exactly where the user left it.
+  const [studioKey, setStudioKey] = useState(null)
   const [createOpen, setCreateOpen] = useState(false)
   const [prefill, setPrefill] = useState(null)
   const [toasts, setToasts] = useState([])
@@ -686,6 +690,34 @@ export default function App() {
   // The drawer renders from drawerKey (not selection intent) so it survives
   // the closing animation: the issue stays readable while sliding away.
   const selected = drawerKey ? (issues.find((it) => it.key === drawerKey) ?? null) : null
+  const studioIssue = studioKey ? (issues.find((it) => it.key === studioKey) ?? null) : null
+
+  // Keep the parent record in sync with the persisted document so reopening the
+  // studio (or reading documentRevision elsewhere) reflects the latest save.
+  const handleDocumentSaved = useCallback((key, document) => {
+    setIssues((prev) =>
+      prev.map((item) => {
+        if (item.key !== key || !item.record) return item
+        return {
+          ...item,
+          updatedAt: document.documentUpdatedAt ?? item.updatedAt,
+          record: {
+            ...item.record,
+            document: {
+              schemaVersion: document.schemaVersion,
+              revision: document.revision,
+              blocks: document.blocks,
+              updatedAt: document.documentUpdatedAt ?? null,
+            },
+            documentSchemaVersion: document.schemaVersion,
+            documentRevision: document.revision,
+            updatedAt: document.documentUpdatedAt ?? item.record.updatedAt,
+          },
+        }
+      }),
+    )
+  }, [])
+
   const generatingCount = issues.filter((i) => i.status === 'inprogress').length
   const firstGeneratingKey = useMemo(
     () => issues.find((i) => i.status === 'inprogress')?.key ?? null,
@@ -938,7 +970,22 @@ export default function App() {
           onMarkStale={markStale}
           onAuthRequired={handleAuthRequired}
           onOpenPreview={() => window.open(`${API_BASE}/api/v1/assignments/${selected.record.id}/html`, '_blank', 'noopener')}
+          onOpenStudio={() => {
+            if (!ensureSession()) return
+            setStudioKey(selected.key)
+          }}
           apiBase={API_BASE}
+        />
+      )}
+
+      {studioIssue?.record?.id && (
+        <DocumentStudio
+          key={studioIssue.key}
+          issue={studioIssue}
+          apiBase={API_BASE}
+          onClose={() => setStudioKey(null)}
+          onAuthRequired={handleAuthRequired}
+          onSaved={(document) => handleDocumentSaved(studioIssue.key, document)}
         />
       )}
 

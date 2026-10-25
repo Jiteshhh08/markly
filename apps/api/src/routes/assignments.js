@@ -9,10 +9,42 @@ import {
   resolveTemplateForGeneration,
 } from "../lib/templateResolution.js";
 import { findRecord, listRecordsFor, nextAssignmentId, ownerId, persistWithWarning, saveRecord } from "../lib/assignmentStore.js";
+import {
+  currentDocumentRevision,
+  documentSaveSchema,
+  syncDocumentBlocksForContent,
+  withDocumentBlocks,
+} from "../lib/documentBlocks.js";
+import { normalizeAndValidateDocument } from "../lib/documentModel.js";
 import { renderHtml } from "../render/html.js";
 import { sendError } from "../lib/errors.js";
 
 export const assignmentsRouter = Router();
+
+// STAGE 5: serialize document saves per assignment. Revision checks make a
+// stale client fail with 409; this lock also closes the small in-process race
+// where two simultaneous requests could both read the same revision before
+// either committed.
+const documentSaveQueues = new Map();
+
+async function withDocumentSaveLock(assignmentId, task) {
+  const previous = documentSaveQueues.get(assignmentId) ?? Promise.resolve();
+  let release;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  const queued = previous.then(() => gate);
+  documentSaveQueues.set(assignmentId, queued);
+  await previous;
+  try {
+    return await task();
+  } finally {
+    release();
+    if (documentSaveQueues.get(assignmentId) === queued) {
+      documentSaveQueues.delete(assignmentId);
+    }
+  }
+}
 
 // Resolve the exact immutable template version stored on an assignment.
 // Missing identity/version or a deleted historical version is an explicit
@@ -134,6 +166,58 @@ assignmentsRouter.get("/:id", async (req, res) => {
   return res.json(record);
 });
 
+// STAGE 5: fetch the editable canonical document. Legacy assignments are
+// projected into blocks on READ; this route never writes them back.
+assignmentsRouter.get("/:id/document", async (req, res) => {
+  const record = await findRecord(req.params.id, ownerId(req));
+  if (!record) return res.status(404).json({ error: "Not found" });
+  try {
+    return res.json({ document: normalizeAndValidateDocument(record) });
+  } catch (err) {
+    return sendError(res, 500, "The document could not be read. Please try again.", err);
+  }
+});
+
+// STAGE 5: save the editable body with optimistic concurrency. Only the
+// revision + blocks are accepted; template identity, ownership, content and
+// presentation metadata remain server-owned and cannot be overwritten here.
+assignmentsRouter.put("/:id/document", async (req, res) => {
+  const parsed = documentSaveSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return sendError(res, 400, "Invalid document", parsed.error.flatten());
+  }
+
+  return withDocumentSaveLock(req.params.id, async () => {
+    const record = await findRecord(req.params.id, ownerId(req));
+    if (!record) return res.status(404).json({ error: "Not found" });
+
+    const revision = currentDocumentRevision(record);
+    if (parsed.data.revision !== revision) {
+      return res.status(409).json({
+        error: "This document changed since you opened it. Reload the latest version and reapply your edits.",
+        code: "document_conflict",
+        revision,
+      });
+    }
+
+    const updated = withDocumentBlocks(record, parsed.data.blocks, {
+      revision: revision + 1,
+    });
+    // Durable write first: a failed write must never look like a successful
+    // save, and the previous document stays intact in memory and Mongo.
+    const persisted = await persistWithWarning(updated, "assignment document update");
+    if (!persisted) {
+      return sendError(
+        res,
+        503,
+        "The document could not be saved. Your edits are still in this editor; try again when the service is available.",
+      );
+    }
+    saveRecord(updated);
+    return res.json({ document: normalizeAndValidateDocument(updated) });
+  });
+});
+
 // Delete a record everywhere it lives (memory, Mongo, generated PDF).
 assignmentsRouter.delete("/:id", async (req, res) => {
   const record = await findRecord(req.params.id, ownerId(req));
@@ -179,7 +263,7 @@ assignmentsRouter.patch("/:id/options", async (req, res) => {
 
 // Phase 3: regenerate one section; everything else stays untouched.
 assignmentsRouter.post("/:id/regenerate-section", async (req, res) => {
-  const record = await findRecord(req.params.id, ownerId(req));
+  let record = await findRecord(req.params.id, ownerId(req));
   if (!record) return res.status(404).json({ error: "Not found" });
   const section = req.body?.section;
   if (!SECTION_NAMES.includes(section)) {
@@ -201,8 +285,17 @@ assignmentsRouter.post("/:id/regenerate-section", async (req, res) => {
     if (!value.success) {
       return sendError(res, 502, "Invalid regenerated section", value.error.flatten());
     }
+    const previousContent = record.content;
     record.content = { ...record.content, [section]: value.data };
-    record.updatedAt = new Date().toISOString();
+    // STAGE 5: if this assignment has a saved editable body, replace only the
+    // blocks sourced from this section. Manual blocks, styles and ordering of
+    // every unrelated section stay untouched.
+    const nextBlocks = syncDocumentBlocksForContent(record, previousContent, record.content);
+    if (nextBlocks) {
+      record = withDocumentBlocks(record, nextBlocks);
+    } else {
+      record.updatedAt = new Date().toISOString();
+    }
     saveRecord(record);
     await persistWithWarning(record, "assignment section regeneration");
     return res.json(record);
@@ -214,15 +307,23 @@ assignmentsRouter.post("/:id/regenerate-section", async (req, res) => {
 
 // Phase 3: save user-edited content (full re-validation).
 assignmentsRouter.put("/:id", async (req, res) => {
-  const record = await findRecord(req.params.id, ownerId(req));
+  let record = await findRecord(req.params.id, ownerId(req));
   if (!record) return res.status(404).json({ error: "Not found" });
   const parsed = assignmentContentSchema.safeParse(req.body?.content);
   if (!parsed.success) {
     return sendError(res, 400, "Invalid assignment content", parsed.error.flatten());
   }
+  const previousContent = record.content;
   record.content = parsed.data;
   record.editedByUser = true;
-  record.updatedAt = new Date().toISOString();
+  // Keep a saved studio document coherent with explicit section edits while
+  // preserving manual blocks in every section that did not change.
+  const nextBlocks = syncDocumentBlocksForContent(record, previousContent, parsed.data);
+  if (nextBlocks) {
+    record = withDocumentBlocks(record, nextBlocks);
+  } else {
+    record.updatedAt = new Date().toISOString();
+  }
   saveRecord(record);
   await persistWithWarning(record, "assignment content update");
   return res.json(record);

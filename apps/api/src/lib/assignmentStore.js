@@ -52,11 +52,23 @@ export async function persistRecord(record) {
     const mongoose = (await import("mongoose")).default;
     if (mongoose.connection.readyState !== 1) return false;
     const { Assignment } = await import("../models/index.js");
-    await Assignment.updateOne(
-      { recordId: record.id },
-      { $set: { recordId: record.id, userId: record.userId ?? "anonymous", data: record } },
-      { upsert: true },
-    );
+    const set = {
+      recordId: record.id,
+      userId: record.userId ?? "anonymous",
+      data: record,
+    };
+    // STAGE 5: mirror the document schema/revision at the top level so the
+    // durable record is queryable without parsing the full Mixed payload.
+    if (Number.isInteger(record.documentSchemaVersion)) {
+      set.documentSchemaVersion = record.documentSchemaVersion;
+    }
+    if (Number.isInteger(record.documentRevision)) {
+      set.documentRevision = record.documentRevision;
+    }
+    if (record.document && typeof record.document === "object") {
+      set.document = record.document;
+    }
+    await Assignment.updateOne({ recordId: record.id }, { $set: set }, { upsert: true });
     return true;
   } catch {
     return false;

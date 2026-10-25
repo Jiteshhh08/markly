@@ -1,5 +1,14 @@
 import { z } from "zod";
 import { TEMPLATE_SCOPES } from "./templateAccess.js";
+import {
+  DOCUMENT_SCHEMA_VERSION,
+  blocksFromContent,
+  currentDocumentRevision,
+  documentBlocksSchema,
+  storedDocumentBlocks,
+} from "./documentBlocks.js";
+
+export { DOCUMENT_SCHEMA_VERSION } from "./documentBlocks.js";
 
 // STAGE 1: canonical document/layout model.
 //
@@ -12,8 +21,6 @@ import { TEMPLATE_SCOPES } from "./templateAccess.js";
 // Legacy records are normalized on READ. Nothing here rewrites Mongo records,
 // invents a college/branch, or invents missing template formatting. Missing
 // data is surfaced explicitly through the `normalization` flags.
-
-export const DOCUMENT_SCHEMA_VERSION = 1;
 
 const nullableString = z.string().max(128).nullable();
 const templateScopeSchema = z.enum(TEMPLATE_SCOPES);
@@ -60,6 +67,7 @@ export const documentNormalizationSchema = z
     missingTemplate: z.boolean(),
     missingVersion: z.boolean().optional(),
     missingLayout: z.boolean(),
+    missingBlocks: z.boolean().optional(),
     defaultsApplied: z.array(z.string()).optional(),
   })
   .strict();
@@ -75,6 +83,11 @@ export const documentSchema = z
     template: documentTemplateSchema.nullable(),
     layout: documentLayoutSchema.nullable(),
     presentation: documentPresentationSchema,
+    // STAGE 5: the editable body. `content` remains the academic snapshot used
+    // by AI generation/section regeneration; `blocks` is what the studio edits.
+    blocks: documentBlocksSchema,
+    revision: z.number().int().min(0),
+    documentUpdatedAt: z.string().nullable().optional(),
     normalization: documentNormalizationSchema,
   })
   .strict();
@@ -212,6 +225,13 @@ export function normalizeDocument(record, templateDoc = null) {
   const template = templateSnapshot(record ?? {}, templateDoc);
   const { presentation, defaultsApplied } = presentationSnapshot(record ?? {});
 
+  // STAGE 5: use the persisted editable body when present; otherwise derive a
+  // deterministic block projection from the academic content for READ ONLY.
+  // Merely opening a legacy assignment never writes these blocks back.
+  const storedBlocks = storedDocumentBlocks(record);
+  const blocks = storedBlocks ?? blocksFromContent(content.content);
+  const revision = currentDocumentRevision(record);
+
   const missingContent = content.content === null;
   const legacy = content.source !== "current" || template.missingTemplate || template.missingVersion || missingContent;
 
@@ -225,6 +245,9 @@ export function normalizeDocument(record, templateDoc = null) {
     template: template.template,
     layout: template.layout,
     presentation,
+    blocks,
+    revision,
+    documentUpdatedAt: record?.document?.updatedAt ?? null,
     normalization: {
       source: content.source,
       legacy,
@@ -232,6 +255,7 @@ export function normalizeDocument(record, templateDoc = null) {
       missingTemplate: template.missingTemplate,
       missingVersion: template.missingVersion,
       missingLayout: template.missingLayout,
+      missingBlocks: storedBlocks === null,
       ...(defaultsApplied.length ? { defaultsApplied } : {}),
     },
   };

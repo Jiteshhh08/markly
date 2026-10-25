@@ -61,8 +61,6 @@ export function PreferencesModal({
 
   useEffect(() => {
     let alive = true
-    setLoading(true)
-    setLoadError('')
     Promise.all([fetchPreferences(), fetchPreferenceOptions()])
       .then(([preferences, preferenceOptions]) => {
         if (!alive) return
@@ -133,6 +131,12 @@ export function PreferencesModal({
 
   const branchDefault = normalizeTemplate(selectedBranch?.defaultTemplate)
   const branchDefaultUsable = Boolean(branchDefault && isUsableTemplate(branchDefault))
+
+  function retryLoad() {
+    setLoading(true)
+    setLoadError('')
+    setReloadKey((value) => value + 1)
+  }
 
   function setPrivateOnly(checked) {
     setForm((previous) => ({
@@ -254,7 +258,7 @@ export function PreferencesModal({
       ) : loadError ? (
         <div className="rounded-xl border border-line bg-white px-4 py-6 text-center">
           <p className="text-[13.5px] font-semibold text-ink-900">{loadError}</p>
-          <Button variant="secondary" className="mt-4" onClick={() => setReloadKey((value) => value + 1)}>
+          <Button variant="secondary" className="mt-4" onClick={retryLoad}>
             <Icon name="refresh" className="h-4 w-4" />
             Try again
           </Button>

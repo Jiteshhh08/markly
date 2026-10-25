@@ -165,6 +165,9 @@ const assignmentSchema = new Schema(
     templateVersion: Number,
     documentSchemaVersion: Number,
     documentRevision: Number,
+    // STAGE 5: editable document body ({schemaVersion, revision, blocks}).
+    // Kept inside the durable record payload as well for restart-safe reads.
+    document: Mixed,
     input: Mixed,
     generatedContent: Mixed,
     generationId: String,
