@@ -959,7 +959,7 @@ export default function App() {
 
       {selected && (
         <DetailDrawer
-          key={selected.key}
+          key={`drawer-${selected.key}`}
           issue={selected}
           shown={drawerShown}
           onClose={closeDrawer}
@@ -980,7 +980,7 @@ export default function App() {
 
       {studioIssue?.record?.id && (
         <DocumentStudio
-          key={studioIssue.key}
+          key={`studio-${studioIssue.key}`}
           issue={studioIssue}
           apiBase={API_BASE}
           onClose={() => setStudioKey(null)}
