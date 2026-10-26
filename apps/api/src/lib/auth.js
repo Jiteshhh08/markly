@@ -1,11 +1,20 @@
+import { randomUUID } from "node:crypto";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
+import { isProduction } from "./cors.js";
 
 // Minimal local auth (Phase 9). Users live in memory in dev; Mongo persistence
-// is best-effort when connected. Set AUTH_REQUIRED=1 to enforce tokens on
-// write endpoints; otherwise the API runs open for local development.
+// is required in production (registration/profile changes fail closed when it
+// is unavailable). Set AUTH_REQUIRED=1 to enforce tokens on write endpoints;
+// otherwise the API runs open for local development.
 
 const users = new Map(); // email -> { id, email, name, passwordHash, tenantIds }
+
+function storageUnavailable() {
+  const err = new Error("Account storage is unavailable");
+  err.status = 503;
+  return err;
+}
 
 function secret() {
   // A publicly documented placeholder must never become a real signing key:
@@ -36,7 +45,13 @@ export async function registerUser({ email, password, name } = {}) {
   const passwordHash = await bcrypt.hash(String(password), 10);
   // Public registration accepts identity credentials only. `role`,
   // `collegeAdminOf`, `tenantIds` and preferences are intentionally ignored.
-  const user = { id: `usr_${Date.now()}`, email: key, name: name ?? "", passwordHash, tenantIds: [] };
+  const user = {
+    id: `usr_${randomUUID()}`,
+    email: key,
+    name: name ?? "",
+    passwordHash,
+    tenantIds: [],
+  };
   users.set(key, user);
   // Awaited: the account must be durable before the first token is trusted.
   // Still non-fatal without Mongo (dev open mode) — tryPersist swallows there.
@@ -123,6 +138,13 @@ async function findPersistedUser(key) {
   } catch {
     return null;
   }
+}
+
+// Fail fast at process startup when auth is enforced but the signing key is a
+// documented placeholder. Without this, the server boots and every auth
+// request fails later with a 500 instead of refusing to start.
+export function assertAuthConfiguration() {
+  if (process.env.AUTH_REQUIRED === "1") secret();
 }
 
 export function signToken(user) {
@@ -220,7 +242,10 @@ export function requireAuthIfEnabled(req, res, next) {
 async function tryPersist(user) {
   try {
     const mongoose = (await import("mongoose")).default;
-    if (mongoose.connection.readyState !== 1) return;
+    if (mongoose.connection.readyState !== 1) {
+      if (isProduction()) throw storageUnavailable();
+      return;
+    }
     const { User } = await import("../models/index.js");
 
     // Fail closed on ANY existing account. In particular, never "reclaim" a
@@ -241,7 +266,11 @@ async function tryPersist(user) {
     if (!result.upsertedCount) throw new Error("Email already registered");
   } catch (err) {
     if (String(err?.message ?? "").includes("already registered")) throw err;
-    // Non-fatal in local mode / transient Mongo failure.
+    if (err?.code === 11000) throw new Error("Email already registered");
+    // Production must not return a token for an account that only exists in
+    // process memory. Local dev and tests keep the memory-only fallback.
+    if (isProduction()) throw storageUnavailable();
+    if (err?.status === 503) throw err;
   }
 }
 
@@ -279,17 +308,28 @@ export async function updateProfileForUser(userId, patch = {}) {
   if (Object.keys(allowed).length === 0) throw new Error("No profile fields to update");
 
   const memory = memoryUserById(id);
-  if (memory) Object.assign(memory, allowed);
-
   const mongoose = (await import("mongoose")).default;
   if (mongoose.connection.readyState === 1) {
     const { User } = await import("../models/index.js");
-    const result = await User.updateOne({ id }, { $set: allowed });
-    if (!result.matchedCount && mongoose.Types.ObjectId.isValid(id)) {
-      await User.updateOne({ _id: id }, { $set: allowed });
+    try {
+      const result = await User.updateOne({ id }, { $set: allowed });
+      let matched = result.matchedCount;
+      if (!matched && mongoose.Types.ObjectId.isValid(id)) {
+        const byObjectId = await User.updateOne({ _id: id }, { $set: allowed });
+        matched = byObjectId.matchedCount;
+      }
+      // A persisted actor whose document cannot be updated must not receive a
+      // success response in production; the next request would show old data.
+      if (!matched && isProduction()) throw storageUnavailable();
+    } catch (err) {
+      if (err?.status === 503 || !isProduction()) throw err;
+      throw storageUnavailable();
     }
+  } else if (isProduction()) {
+    throw storageUnavailable();
   }
 
+  if (memory) Object.assign(memory, allowed);
   if (memory) {
     return { id: memory.id, email: memory.email, name: memory.name ?? "", avatarUrl: memory.avatarUrl ?? "" };
   }

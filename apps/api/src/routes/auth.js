@@ -40,7 +40,7 @@ authRouter.post("/register", async (req, res) => {
     return res.status(201).json({ token });
   } catch (err) {
     const msg = String(err?.message ?? "");
-    const status = msg.includes("already registered") ? 409 : 400;
+    const status = err?.status === 503 ? 503 : msg.includes("already registered") ? 409 : 400;
     return authError(res, status, err, "Couldn't create the account. Please try again.");
   }
 });
@@ -69,6 +69,9 @@ authRouter.patch("/profile", async (req, res) => {
     const user = await updateProfileForUser(req.user.sub, req.body ?? {});
     return res.json({ user });
   } catch (err) {
+    if (err?.status === 503) {
+      return sendError(res, 503, "Profile storage is unavailable. Please try again.");
+    }
     const msg = String(err?.message ?? "");
     if (SAFE_AUTH_MESSAGES.has(msg)) return res.status(400).json({ error: msg });
     return sendError(res, 400, "Couldn't update the profile. Please try again.", msg);

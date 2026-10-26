@@ -13,12 +13,14 @@ const execFileAsync = promisify(execFile);
 // machine with native Docker:  docker run --rm -v "{dir}:/work" -w /work texlive/texlive:latest ...
 // From Windows with Docker inside WSL, use the {wslDir} placeholder (cmd.exe
 // cannot do $(wslpath) interpolation, so Node translates the path itself):
-//   wsl docker run --rm -v "{wslDir}:/work" -w /work texlive/texlive:latest pdflatex -interaction=nonstopmode -halt-on-error doc
+//   wsl docker run --rm -v "{wslDir}:/work" -w /work texlive/texlive:latest pdflatex -no-shell-escape -interaction=nonstopmode -halt-on-error doc
+// Custom commands MUST include -no-shell-escape: saved LaTeX overrides are
+// untrusted input, and shell-escape would let them run host/container commands.
 // Compilation failures return { ok: false } with the compiler output attached.
 
 const DEFAULT_CMD =
   process.env.PDF_COMPILE_CMD ||
-  'docker run --rm -v "{dir}:/work" -w /work texlive/texlive:latest pdflatex -interaction=nonstopmode -halt-on-error doc.tex';
+  'docker run --rm -v "{dir}:/work" -w /work texlive/texlive:latest pdflatex -no-shell-escape -interaction=nonstopmode -halt-on-error doc.tex';
 
 // Compiler preflight: which docker and which image to look for. Checked BEFORE
 // every compile so a missing image produces "pull it" instructions instead of

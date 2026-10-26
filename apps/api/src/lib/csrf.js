@@ -7,9 +7,9 @@ import { corsAllowList, isProduction } from "./cors.js";
 // cross-site form/fetch could otherwise mutate data as the logged-in user.
 // Bearer tokens are not ambient credentials and therefore bypass this check.
 //
-// This middleware is intentionally reusable and is NOT mounted on legacy
-// routes in STAGE 1. It must wrap every future admin mutation route. The rule
-// is fail-closed: a cookie-authenticated unsafe request needs an Origin (or
+// This middleware is reusable and is mounted in production on assignments,
+// examples, jobs, preferences, templates, and admin routes. The rule is
+// fail-closed: a cookie-authenticated unsafe request needs an Origin (or
 // Referer fallback) that is either in ALLOWED_ORIGINS or same-origin with the
 // API host. Missing/foreign origins are rejected with 403.
 
@@ -94,9 +94,10 @@ export function isCsrfOriginAllowed(req, env = process.env) {
 
 export function csrfProtection({ env = process.env, productionOnly = false } = {}) {
   return (req, res, next) => {
-    // STAGE 2 mounts this on existing template mutations in production only.
-    // The env object is read per request, so runtime configuration changes and
-    // tests are honored without rebuilding the middleware.
+    // Production-only mounts keep local development and the historical test
+    // suites working while enforcing CSRF wherever cookies are accepted in
+    // production. The env object is read per request, so runtime configuration
+    // changes and tests are honored without rebuilding the middleware.
     if (productionOnly && !isProduction(env)) return next();
     if (SAFE_METHODS.has(String(req.method ?? "GET").toUpperCase())) return next();
     if (!cookieAuthenticated(req)) return next();

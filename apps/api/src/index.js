@@ -11,7 +11,12 @@ import { healthRouter } from "./routes/health.js";
 import { jobsRouter } from "./routes/jobs.js";
 import { preferencesRouter } from "./routes/preferences.js";
 import { templatesRouter } from "./routes/templates.js";
-import { authAttach, hydrateUsersFromMongo, requireAuthIfEnabled } from "./lib/auth.js";
+import {
+  assertAuthConfiguration,
+  authAttach,
+  hydrateUsersFromMongo,
+  requireAuthIfEnabled,
+} from "./lib/auth.js";
 import { corsAllowList, corsOptions, isProduction } from "./lib/cors.js";
 import { csrfProtection } from "./lib/csrf.js";
 import { requirePersistedActor } from "./lib/roles.js";
@@ -26,6 +31,16 @@ process.on("unhandledRejection", (err) => {
 });
 
 const app = express();
+// The documented production topology is Caddy on the host proxying to
+// 127.0.0.1:4000. Without this, every request appears to come from Caddy and
+// all users share one rate-limit bucket. "loopback" trusts X-Forwarded-For
+// only from a local reverse proxy, so a direct internet caller cannot spoof
+// its address. Override with TRUST_PROXY (a hop count, subnet, or "false")
+// when the proxy runs on a Docker bridge network.
+const trustProxy = String(process.env.TRUST_PROXY ?? "loopback").trim();
+if (trustProxy && !["0", "false"].includes(trustProxy.toLowerCase())) {
+  app.set("trust proxy", /^\d+$/.test(trustProxy) ? Number(trustProxy) : trustProxy);
+}
 app.use(helmet({ crossOriginResourcePolicy: false }));
 // credentials:true + origin policy: ALLOWED_ORIGINS (comma-separated) locks
 // the API to known frontends. Unset = reflect any origin outside production
@@ -54,7 +69,12 @@ app.use((req, _res, next) => {
 app.use(authAttach);
 
 // Tenant artwork (headers, watermarks, logos) served as static files.
+// Generated assignment PDFs live under assets/generated but are private user
+// data: they are served only by the authenticated assignment PDF route, never
+// by the public artwork mount. Their names are predictable, so exposing the
+// directory would let anyone enumerate and download other users' documents.
 ensureDirs();
+app.use("/assets/generated", (_req, res) => res.status(404).json({ error: "Not found" }));
 app.use("/assets", express.static(assetsDir));
 
 // Basic rate limiting (in-memory window; point at Redis when REDIS_URL is set in production).
@@ -78,9 +98,27 @@ app.use("/api/v1/auth", authRouter);
 // STAGE 3: every user-owned / mutating resource honors AUTH_REQUIRED=1.
 // Previously only /assignments was guarded; /templates, /jobs and /examples
 // stayed open in production. /health intentionally stays public.
-app.use("/api/v1/assignments", requireAuthIfEnabled, assignmentsRouter);
-app.use("/api/v1/examples", requireAuthIfEnabled, examplesRouter);
-app.use("/api/v1/jobs", requireAuthIfEnabled, jobsRouter);
+// Cookie-authenticated mutations are CSRF-checked in production. Bearer
+// requests bypass the ambient-cookie check; non-production keeps the
+// historical open behavior for local development and the existing suites.
+app.use(
+  "/api/v1/assignments",
+  requireAuthIfEnabled,
+  csrfProtection({ productionOnly: true }),
+  assignmentsRouter,
+);
+app.use(
+  "/api/v1/examples",
+  requireAuthIfEnabled,
+  csrfProtection({ productionOnly: true }),
+  examplesRouter,
+);
+app.use(
+  "/api/v1/jobs",
+  requireAuthIfEnabled,
+  csrfProtection({ productionOnly: true }),
+  jobsRouter,
+);
 // STAGE 4: preferences are always private to the persisted actor. Unlike the
 // other user resources, this router is NEVER open in local mode: a saved
 // college/branch must identify a real MongoDB user, and anonymous callers get
@@ -133,6 +171,9 @@ app.use((err, _req, res, _next) => {
 const PORT = Number(process.env.PORT ?? 4000);
 
 async function main() {
+  // Refuse to start with the documented placeholder JWT_SECRET while auth is
+  // enforced; otherwise the process would boot and fail on the first request.
+  assertAuthConfiguration();
   if (isProduction() && corsAllowList().length === 0) {
     console.error(
       "[api] NODE_ENV=production but ALLOWED_ORIGINS is unset — browser origins are BLOCKED. " +
@@ -166,7 +207,13 @@ async function main() {
 }
 
 if (process.env.NODE_ENV !== "test") {
-  void main();
+  main().catch((err) => {
+    // Boot failures (including a placeholder JWT_SECRET while auth is
+    // enforced) must terminate the process, not leave it alive without a
+    // listener. The unhandledRejection handler above only logs.
+    console.error("[api] startup failed:", err);
+    process.exit(1);
+  });
 }
 
 export default app;

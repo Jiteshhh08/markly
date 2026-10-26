@@ -8,7 +8,15 @@ import {
   resolveAssignmentTemplate,
   resolveTemplateForGeneration,
 } from "../lib/templateResolution.js";
-import { findRecord, listRecordsFor, nextAssignmentId, ownerId, persistWithWarning, saveRecord } from "../lib/assignmentStore.js";
+import {
+  durabilityRequired,
+  findRecord,
+  listRecordsFor,
+  nextAssignmentId,
+  ownerId,
+  persistWithWarning,
+  saveRecord,
+} from "../lib/assignmentStore.js";
 import {
   currentDocumentRevision,
   documentSaveSchema,
@@ -26,6 +34,13 @@ export const assignmentsRouter = Router();
 // where two simultaneous requests could both read the same revision before
 // either committed.
 const documentSaveQueues = new Map();
+
+const SAVE_UNAVAILABLE =
+  "The assignment could not be saved. Please try again when the service is available.";
+
+function saveUnavailable(res) {
+  return sendError(res, 503, SAVE_UNAVAILABLE);
+}
 
 async function withDocumentSaveLock(assignmentId, task) {
   const previous = documentSaveQueues.get(assignmentId) ?? Promise.resolve();
@@ -176,10 +191,12 @@ assignmentsRouter.post("/generate", async (req, res) => {
       },
       createdAt: new Date().toISOString(),
     };
-    saveRecord(record);
     // Authoritative durable write (awaited): the response commits only after
-    // Mongo acknowledges it. Degraded mode is logged, never silent.
-    await persistWithWarning(record, "assignment");
+    // Mongo acknowledges it. Production fails closed; local/test mode may
+    // continue in memory with a DEGRADED warning.
+    const persisted = await persistWithWarning(record, "assignment");
+    if (!persisted && durabilityRequired()) return saveUnavailable(res);
+    saveRecord(record);
 
     return res.json(record);
   } catch (err) {
@@ -271,7 +288,17 @@ assignmentsRouter.delete("/:id", async (req, res) => {
   if (!record) return res.status(404).json({ error: "Not found" });
   try {
     const { deleteRecord } = await import("../lib/assignmentStore.js");
-    await deleteRecord(record.id);
+    const durable = await deleteRecord(record.id);
+    if (!durable && durabilityRequired()) {
+      // Restore the in-memory copy: the database still has the record, so a
+      // failed delete must not look successful or disappear from the board.
+      saveRecord(record);
+      return sendError(
+        res,
+        503,
+        "The assignment could not be deleted. Please try again when the service is available.",
+      );
+    }
     return res.json({ ok: true });
   } catch (err) {
     return sendError(res, 502, "Delete failed", String(err).slice(0, 300));
@@ -298,14 +325,18 @@ assignmentsRouter.patch("/:id/options", async (req, res) => {
   if (typedConclusion !== undefined && typeof typedConclusion !== "boolean") {
     return res.status(400).json({ error: "typedConclusion must be a boolean" });
   }
-  record.options = {
-    includeVivaTitle: includeVivaTitle ?? record.options?.includeVivaTitle ?? false,
-    typedConclusion: typedConclusion ?? record.options?.typedConclusion ?? true,
+  const updated = {
+    ...record,
+    options: {
+      includeVivaTitle: includeVivaTitle ?? record.options?.includeVivaTitle ?? false,
+      typedConclusion: typedConclusion ?? record.options?.typedConclusion ?? true,
+    },
+    updatedAt: new Date().toISOString(),
   };
-  record.updatedAt = new Date().toISOString();
-  saveRecord(record);
-  await persistWithWarning(record, "assignment options update");
-  return res.json(record);
+  const persisted = await persistWithWarning(updated, "assignment options update");
+  if (!persisted && durabilityRequired()) return saveUnavailable(res);
+  saveRecord(updated);
+  return res.json(updated);
 });
 
 // Phase 3: regenerate one section; everything else stays untouched.
@@ -333,19 +364,22 @@ assignmentsRouter.post("/:id/regenerate-section", async (req, res) => {
       return sendError(res, 502, "Invalid regenerated section", value.error.flatten());
     }
     const previousContent = record.content;
-    record.content = { ...record.content, [section]: value.data };
+    // Mutate a copy so a failed durable write cannot leave the hot cache ahead
+    // of MongoDB.
+    let updated = { ...record, content: { ...record.content, [section]: value.data } };
     // STAGE 5: if this assignment has a saved editable body, replace only the
     // blocks sourced from this section. Manual blocks, styles and ordering of
     // every unrelated section stay untouched.
-    const nextBlocks = syncDocumentBlocksForContent(record, previousContent, record.content);
+    const nextBlocks = syncDocumentBlocksForContent(updated, previousContent, updated.content);
     if (nextBlocks) {
-      record = withDocumentBlocks(record, nextBlocks);
+      updated = withDocumentBlocks(updated, nextBlocks);
     } else {
-      record.updatedAt = new Date().toISOString();
+      updated.updatedAt = new Date().toISOString();
     }
-    saveRecord(record);
-    await persistWithWarning(record, "assignment section regeneration");
-    return res.json(record);
+    const persisted = await persistWithWarning(updated, "assignment section regeneration");
+    if (!persisted && durabilityRequired()) return saveUnavailable(res);
+    saveRecord(updated);
+    return res.json(updated);
   } catch (err) {
     console.error(`[api] section regeneration failed for ${record.id}:`, String(err));
     return sendError(res, 502, "Regeneration failed");
@@ -361,19 +395,19 @@ assignmentsRouter.put("/:id", async (req, res) => {
     return sendError(res, 400, "Invalid assignment content", parsed.error.flatten());
   }
   const previousContent = record.content;
-  record.content = parsed.data;
-  record.editedByUser = true;
+  let updated = { ...record, content: parsed.data, editedByUser: true };
   // Keep a saved studio document coherent with explicit section edits while
   // preserving manual blocks in every section that did not change.
-  const nextBlocks = syncDocumentBlocksForContent(record, previousContent, parsed.data);
+  const nextBlocks = syncDocumentBlocksForContent(updated, previousContent, parsed.data);
   if (nextBlocks) {
-    record = withDocumentBlocks(record, nextBlocks);
+    updated = withDocumentBlocks(updated, nextBlocks);
   } else {
-    record.updatedAt = new Date().toISOString();
+    updated.updatedAt = new Date().toISOString();
   }
-  saveRecord(record);
-  await persistWithWarning(record, "assignment content update");
-  return res.json(record);
+  const persisted = await persistWithWarning(updated, "assignment content update");
+  if (!persisted && durabilityRequired()) return saveUnavailable(res);
+  saveRecord(updated);
+  return res.json(updated);
 });
 
 // Phase 4: DOCX download (deterministic template injection, not LLM output).
@@ -442,26 +476,30 @@ assignmentsRouter.put("/:id/latex", async (req, res) => {
     return res.status(400).json({ error: "Invalid LaTeX (must be 10..200000 chars)" });
   }
   const savedAt = new Date().toISOString();
-  record.latexOverride = latex;
-  record.latexOverrideMeta = {
-    documentRevision: currentDocumentRevision(record),
-    templateId: resolved.template?.id ?? record.template?.id ?? null,
-    templateVersion: Number(resolved.template?.version ?? record.template?.version) || null,
-    savedAt,
+  const updated = {
+    ...record,
+    latexOverride: latex,
+    latexOverrideMeta: {
+      documentRevision: currentDocumentRevision(record),
+      templateId: resolved.template?.id ?? record.template?.id ?? null,
+      templateVersion: Number(resolved.template?.version ?? record.template?.version) || null,
+      savedAt,
+    },
+    updatedAt: savedAt,
   };
-  record.updatedAt = savedAt;
-  saveRecord(record);
-  await persistWithWarning(record, "assignment latex update");
+  const persisted = await persistWithWarning(updated, "assignment latex update");
+  if (!persisted && durabilityRequired()) return saveUnavailable(res);
+  saveRecord(updated);
   return res.json({
     ok: true,
     source: "override",
     override: {
-      ...record.latexOverrideMeta,
+      ...updated.latexOverrideMeta,
       legacy: false,
       stale: false,
       reasons: [],
     },
-    documentRevision: record.latexOverrideMeta.documentRevision,
+    documentRevision: updated.latexOverrideMeta.documentRevision,
   });
 });
 
@@ -470,16 +508,17 @@ assignmentsRouter.delete("/:id/latex", async (req, res) => {
   const record = await findRecord(req.params.id, ownerId(req));
   if (!record) return res.status(404).json({ error: "Not found" });
   const hadOverride = Boolean(record.latexOverride);
-  delete record.latexOverride;
-  delete record.latexOverrideMeta;
-  record.updatedAt = new Date().toISOString();
-  saveRecord(record);
-  await persistWithWarning(record, "assignment latex override clear");
+  const updated = { ...record, updatedAt: new Date().toISOString() };
+  delete updated.latexOverride;
+  delete updated.latexOverrideMeta;
+  const persisted = await persistWithWarning(updated, "assignment latex override clear");
+  if (!persisted && durabilityRequired()) return saveUnavailable(res);
+  saveRecord(updated);
   return res.json({
     ok: true,
     cleared: hadOverride,
     source: "generated",
-    documentRevision: currentDocumentRevision(record),
+    documentRevision: currentDocumentRevision(updated),
   });
 });
 

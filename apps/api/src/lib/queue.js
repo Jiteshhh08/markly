@@ -1,5 +1,11 @@
 import { assignmentContentSchema, generateInputSchema } from "../schemas.js";
-import { getRecord, nextAssignmentId, persistWithWarning, saveRecord } from "./assignmentStore.js";
+import {
+  durabilityRequired,
+  getRecord,
+  nextAssignmentId,
+  persistWithWarning,
+  saveRecord,
+} from "./assignmentStore.js";
 import { generateViaAiService } from "./aiClient.js";
 import { getSubjectProfile } from "./subjects.js";
 import {
@@ -214,8 +220,11 @@ export async function runGenerationJob(input, jobId, userId = "anonymous", pinne
       },
       createdAt: new Date().toISOString(),
     };
+    const persisted = await persistWithWarning(record, "job assignment");
+    if (!persisted && durabilityRequired()) {
+      throw new Error("Assignment storage is unavailable; generation was not saved");
+    }
     saveRecord(record);
-    await persistWithWarning(record, "job assignment");
     setStatus(job, "completed", { progress: 100, assignmentId: record.id });
     return record;
   } catch (err) {

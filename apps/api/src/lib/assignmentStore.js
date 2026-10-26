@@ -7,8 +7,17 @@
 // write stays memory-only and a structured DEGRADED warning is logged —
 // production must never mistake memory for durability.
 
+import { isProduction } from "./cors.js";
+
 const store = new Map();
 let counter = 0;
+
+// Production must never acknowledge a mutation that only reached process
+// memory. Local development and the hermetic test suites intentionally keep
+// the historical memory-only behavior when Mongo is absent.
+export function durabilityRequired(env = process.env) {
+  return isProduction(env);
+}
 
 export function nextAssignmentId() {
   counter += 1;
@@ -148,17 +157,21 @@ export async function listRecordsFor(requesterId) {
   return [...seen.values()].sort(compareNewest);
 }
 
-// Remove everywhere: memory, Mongo, and the generated PDF file (best-effort each).
+// Remove everywhere: memory, Mongo, and the generated PDF file. Returns true
+// only when Mongo acknowledged the delete. Callers use this to fail closed on a
+// non-durable delete; non-production callers may accept a memory-only delete.
 export async function deleteRecord(id) {
   store.delete(id);
+  let durable = false;
   try {
     const mongoose = (await import("mongoose")).default;
     if (mongoose.connection.readyState === 1) {
       const { Assignment } = await import("../models/index.js");
       await Assignment.deleteOne({ recordId: id });
+      durable = true;
     }
   } catch {
-    // Non-fatal.
+    // Non-fatal; the caller decides whether this is acceptable.
   }
   try {
     const { join } = await import("node:path");
@@ -169,4 +182,5 @@ export async function deleteRecord(id) {
   } catch {
     // Non-fatal.
   }
+  return durable;
 }
