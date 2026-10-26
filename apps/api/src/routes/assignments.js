@@ -62,6 +62,53 @@ async function exactTemplateFor(record, res) {
   }
 }
 
+// STAGE 6: a saved LaTeX override is pinned to the document revision and exact
+// template identity it was written against. Legacy overrides (saved before
+// this metadata existed) stay usable, but are labelled `legacy`. Anything else
+// that no longer matches is surfaced as stale instead of silently masking newer
+// visual edits.
+function latexOverrideState(record) {
+  if (typeof record.latexOverride !== "string" || !record.latexOverride) return null;
+  const meta =
+    record.latexOverrideMeta && typeof record.latexOverrideMeta === "object"
+      ? record.latexOverrideMeta
+      : null;
+  const documentRevision = currentDocumentRevision(record);
+  const templateId = record.template?.id ?? null;
+  const templateVersion = Number(record.template?.version);
+  const legacy = !meta || !Number.isInteger(meta.documentRevision);
+  const reasons = [];
+  if (!legacy) {
+    if (meta.documentRevision !== documentRevision) reasons.push("document_revision_changed");
+    if (String(meta.templateId ?? "") !== String(templateId ?? "")) reasons.push("template_changed");
+    if (Number(meta.templateVersion) !== templateVersion) reasons.push("template_version_changed");
+  }
+  return {
+    latex: record.latexOverride,
+    meta,
+    legacy,
+    stale: !legacy && reasons.length > 0,
+    reasons,
+    documentRevision,
+    templateId,
+    templateVersion: Number.isInteger(templateVersion) ? templateVersion : null,
+  };
+}
+
+function overrideMetadata(state) {
+  return {
+    documentRevision: state.meta?.documentRevision ?? null,
+    templateId: state.meta?.templateId ?? null,
+    templateVersion: Number.isInteger(state.meta?.templateVersion)
+      ? state.meta.templateVersion
+      : null,
+    savedAt: state.meta?.savedAt ?? null,
+    legacy: state.legacy,
+    stale: state.stale,
+    reasons: state.reasons,
+  };
+}
+
 // Records live in the shared assignment store (Mongo persistence is best-effort; see index.js).
 
 /**
@@ -237,7 +284,7 @@ assignmentsRouter.get("/:id/html", async (req, res) => {
   if (!record) return res.status(404).json({ error: "Not found" });
   const resolved = await exactTemplateFor(record, res);
   if (!resolved) return undefined;
-  return res.type("html").send(renderHtml(record.content, resolved.doc, record.options));
+  return res.type("html").send(renderHtml(record, resolved.doc, record.options));
 });
 
 // Presentation options can change after generation (viva heading, typed/handwritten conclusion).
@@ -337,7 +384,7 @@ assignmentsRouter.get("/:id/docx", async (req, res) => {
   if (!resolved) return undefined;
   try {
     const { renderDocx } = await import("../render/docx.js");
-    const buf = await renderDocx(record.content, resolved.doc, record.options);
+    const buf = await renderDocx(record, resolved.doc, record.options);
     res.setHeader("content-type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
     res.setHeader("content-disposition", `attachment; filename="assignment-${record.id}.docx"`);
     return res.send(Buffer.from(buf));
@@ -346,41 +393,115 @@ assignmentsRouter.get("/:id/docx", async (req, res) => {
   }
 });
 
-// Phase 4: view LaTeX source (editable in the frontend via Monaco).
+// Phase 4 / Stage 6: view LaTeX source. When an override exists, the generated
+// source for the CURRENT saved document is returned alongside it so the UI can
+// show exactly what the override is replacing.
 assignmentsRouter.get("/:id/latex", async (req, res) => {
   const record = await findRecord(req.params.id, ownerId(req));
   if (!record) return res.status(404).json({ error: "Not found" });
   const resolved = await exactTemplateFor(record, res);
   if (!resolved) return undefined;
-  if (record.latexOverride) return res.json({ latex: record.latexOverride, edited: true });
   const { renderLatex } = await import("../render/latex.js");
+  const generatedLatex = renderLatex(record, resolved.doc, record.options);
+  const state = latexOverrideState(record);
+  const template = {
+    id: resolved.template?.id ?? record.template?.id ?? null,
+    version: Number(resolved.template?.version ?? record.template?.version) || null,
+  };
+  if (state) {
+    return res.json({
+      latex: state.latex,
+      edited: true,
+      source: "override",
+      override: overrideMetadata(state),
+      generatedLatex,
+      documentRevision: state.documentRevision,
+      template,
+    });
+  }
   return res.json({
-    latex: renderLatex(record.content, resolved.doc, record.options),
+    latex: generatedLatex,
     edited: false,
+    source: "generated",
+    override: null,
+    documentRevision: currentDocumentRevision(record),
+    template,
   });
 });
 
-// Phase 4: save user-edited LaTeX (treated as untrusted input to the compiler).
+// Phase 4 / Stage 6: save user-edited LaTeX (treated as untrusted input to the
+// compiler). Metadata pins the override to the saved document revision and the
+// assignment's exact template identity so later visual edits can be flagged.
 assignmentsRouter.put("/:id/latex", async (req, res) => {
   const record = await findRecord(req.params.id, ownerId(req));
   if (!record) return res.status(404).json({ error: "Not found" });
+  const resolved = await exactTemplateFor(record, res);
+  if (!resolved) return undefined;
   const latex = req.body?.latex;
   if (typeof latex !== "string" || latex.length < 10 || latex.length > 200000) {
     return res.status(400).json({ error: "Invalid LaTeX (must be 10..200000 chars)" });
   }
+  const savedAt = new Date().toISOString();
   record.latexOverride = latex;
-  record.updatedAt = new Date().toISOString();
+  record.latexOverrideMeta = {
+    documentRevision: currentDocumentRevision(record),
+    templateId: resolved.template?.id ?? record.template?.id ?? null,
+    templateVersion: Number(resolved.template?.version ?? record.template?.version) || null,
+    savedAt,
+  };
+  record.updatedAt = savedAt;
   saveRecord(record);
   await persistWithWarning(record, "assignment latex update");
-  return res.json({ ok: true });
+  return res.json({
+    ok: true,
+    source: "override",
+    override: {
+      ...record.latexOverrideMeta,
+      legacy: false,
+      stale: false,
+      reasons: [],
+    },
+    documentRevision: record.latexOverrideMeta.documentRevision,
+  });
 });
 
-// Phase 4: compile to PDF inside an isolated container; failures are explicit.
+// Stage 6: discard the override and return to generated LaTeX.
+assignmentsRouter.delete("/:id/latex", async (req, res) => {
+  const record = await findRecord(req.params.id, ownerId(req));
+  if (!record) return res.status(404).json({ error: "Not found" });
+  const hadOverride = Boolean(record.latexOverride);
+  delete record.latexOverride;
+  delete record.latexOverrideMeta;
+  record.updatedAt = new Date().toISOString();
+  saveRecord(record);
+  await persistWithWarning(record, "assignment latex override clear");
+  return res.json({
+    ok: true,
+    cleared: hadOverride,
+    source: "generated",
+    documentRevision: currentDocumentRevision(record),
+  });
+});
+
+// Phase 4 / Stage 6: compile to PDF inside an isolated container; failures are
+// explicit. A stale override is refused with 409 unless the caller explicitly
+// bypasses it, so an old hand-edited source cannot silently mask newer blocks.
 assignmentsRouter.post("/:id/pdf", async (req, res) => {
   const record = await findRecord(req.params.id, ownerId(req));
   if (!record) return res.status(404).json({ error: "Not found" });
   const resolved = await exactTemplateFor(record, res);
   if (!resolved) return undefined;
+  const state = latexOverrideState(record);
+  const bypassStaleOverride = req.body?.bypassStaleOverride === true;
+  if (state?.stale && !bypassStaleOverride) {
+    return res.status(409).json({
+      error:
+        "The saved LaTeX override was written against an older document revision or template. Regenerate it, or export again with the stale override explicitly bypassed.",
+      code: "latex_override_stale",
+      override: overrideMetadata(state),
+      documentRevision: state.documentRevision,
+    });
+  }
   try {
     const [{ renderLatex }, { compileLatexToPdf, checkCompiler }] = await Promise.all([
       import("../render/latex.js"),
@@ -391,7 +512,8 @@ assignmentsRouter.post("/:id/pdf", async (req, res) => {
       console.error(`[api] pdf preflight failed for ${record.id}:`, preflight.error);
       return res.status(502).json({ error: "The PDF service is unavailable right now. Please try again later." });
     }
-    const tex = record.latexOverride ?? renderLatex(record.content, resolved.doc, record.options);
+    const source = state ? "override" : "generated";
+    const tex = state ? state.latex : renderLatex(record, resolved.doc, record.options);
     const out = await compileLatexToPdf(tex, resolved.doc);
     if (!out.ok) {
       console.error(`[api] pdf compile failed for ${record.id}:`, out.error, out.log);
@@ -407,6 +529,7 @@ assignmentsRouter.post("/:id/pdf", async (req, res) => {
     }
     res.setHeader("content-type", "application/pdf");
     res.setHeader("content-disposition", `attachment; filename="assignment-${record.id}.pdf"`);
+    res.setHeader("x-markly-latex-source", source);
     return res.send(Buffer.from(out.pdf));
   } catch (err) {
     return sendError(res, 502, "PDF pipeline failed", String(err).slice(0, 500));

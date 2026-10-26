@@ -96,6 +96,7 @@
             "properties": {
               "align": { "enum": ["left", "center", "right", "justify"] },
               "fontSize": { "type": "integer", "minimum": 8, "maximum": 48 },
+              "lineHeight": { "type": "number", "minimum": 0.8, "maximum": 3 },
               "spacingBefore": { "type": "integer", "minimum": 0, "maximum": 120 },
               "spacingAfter": { "type": "integer", "minimum": 0, "maximum": 120 },
               "indent": { "type": "integer", "minimum": 0, "maximum": 120 }

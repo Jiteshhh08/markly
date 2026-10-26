@@ -163,3 +163,35 @@ export async function connectStage5TestDb(name) {
 export async function disconnectStage5TestDb() {
   await mongoose.disconnect().catch(() => {});
 }
+
+// STAGE 6 test database helper. Same fail-closed rule: the forced database name
+// must contain both "stage6" and "test". Production data is never targeted.
+export function stage6TestDbUri(name) {
+  if (!String(name).includes("stage6") || !String(name).includes("test")) {
+    throw new Error(`[stage6-tests] refusing non-stage6 test database '${name}'`);
+  }
+  const raw = String(process.env.MONGODB_TEST_URI || process.env.MONGODB_URI || "").trim();
+  if (!raw) {
+    throw new Error(
+      "[stage6-tests] no MongoDB URI: set MONGODB_TEST_URI (or MONGODB_URI). Refusing to fake-green.",
+    );
+  }
+  const match = raw.match(/^(mongodb(?:\+srv)?:\/\/[^/?]+)(\/[^?]*)?(\?.*)?$/);
+  if (!match) throw new Error("[stage6-tests] unparseable MongoDB URI (refusing to guess)");
+
+  const uri = `${match[1]}/${name}${match[3] ?? ""}`;
+  const actual = uri.split("?")[0].split("/").pop();
+  if (!actual.includes("stage6") || !actual.includes("test")) {
+    throw new Error(`[stage6-tests] refusing non-stage6 test database '${actual}'`);
+  }
+  return uri;
+}
+
+export async function connectStage6TestDb(name) {
+  await mongoose.connect(stage6TestDbUri(name), { serverSelectionTimeoutMS: 15000 });
+  return mongoose.connection.db;
+}
+
+export async function disconnectStage6TestDb() {
+  await mongoose.disconnect().catch(() => {});
+}

@@ -376,7 +376,10 @@ describe("STAGE 5 studio wiring", () => {
       studio.includes("if (!exportReady)"),
       "the export handler must refuse to run with unsaved state",
     );
-    assert.ok(studio.includes("Stage 6"), "the UI must not claim visual exports are already integrated");
+    assert.ok(
+      studio.includes("saved block body") && studio.includes("exact template version"),
+      "the UI must state that exports use the saved blocks and exact template version",
+    );
   });
 
   it("keeps local edits and reports a failed save", () => {

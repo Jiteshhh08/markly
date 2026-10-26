@@ -591,7 +591,7 @@ export function DocumentStudio({ issue, apiBase, onClose, onAuthRequired, onSave
             Exports use the saved document — save before exporting.
           </p>
           <p className="text-[10.5px] text-ink-300">
-            Visual block rendering in HTML/DOCX/LaTeX/PDF lands in Stage 6; these exports keep the current renderer.
+            HTML, DOCX, LaTeX and PDF exports use the saved block body and this assignment's exact template version.
           </p>
         </div>
         <div className="ml-auto flex flex-wrap items-center gap-1.5">

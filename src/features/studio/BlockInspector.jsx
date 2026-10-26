@@ -18,7 +18,7 @@ function numberOrNull(value) {
   return Number.isFinite(parsed) ? parsed : null
 }
 
-function NumberControl({ label, value, min, max, onChange }) {
+function NumberControl({ label, value, min, max, step = 1, onChange }) {
   return (
     <label className="flex items-center justify-between gap-2 text-[12px] font-semibold text-ink-600">
       <span>{label}</span>
@@ -26,7 +26,7 @@ function NumberControl({ label, value, min, max, onChange }) {
         type="number"
         min={min}
         max={max}
-        step={1}
+        step={step}
         value={value ?? ''}
         onChange={(event) => onChange(numberOrNull(event.target.value))}
         className="w-20 rounded-md border border-line bg-white px-2 py-1 text-right text-[12px] text-ink-800 focus:border-pine-800 focus:outline-none focus:ring-2 focus:ring-pine-900/15"
@@ -224,6 +224,14 @@ export function BlockInspector({ block, onContentChange, onStyleChange, onClearS
                   min={8}
                   max={48}
                   onChange={(value) => onStyleChange({ fontSize: value })}
+                />
+                <NumberControl
+                  label="Line height"
+                  value={style.lineHeight}
+                  min={0.8}
+                  max={3}
+                  step={0.05}
+                  onChange={(value) => onStyleChange({ lineHeight: value })}
                 />
                 <NumberControl
                   label="Space before"

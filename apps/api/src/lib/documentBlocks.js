@@ -42,6 +42,7 @@ const styleSchema = z
   .object({
     align: z.enum(DOCUMENT_ALIGNMENTS).optional(),
     fontSize: z.number().int().min(8).max(48).optional(),
+    lineHeight: z.number().min(0.8).max(3).optional(),
     spacingBefore: z.number().int().min(0).max(120).optional(),
     spacingAfter: z.number().int().min(0).max(120).optional(),
     indent: z.number().int().min(0).max(120).optional(),

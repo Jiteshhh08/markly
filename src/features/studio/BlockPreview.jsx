@@ -9,6 +9,7 @@ function styleFor(block, defaults = {}) {
   const style = { ...defaults }
   if (block.style?.align) style.textAlign = block.style.align
   if (Number.isInteger(block.style?.fontSize)) style.fontSize = `${block.style.fontSize}px`
+  if (Number.isFinite(block.style?.lineHeight)) style.lineHeight = String(block.style.lineHeight)
   if (Number.isInteger(block.style?.spacingBefore)) style.marginTop = `${block.style.spacingBefore}px`
   if (Number.isInteger(block.style?.spacingAfter)) style.marginBottom = `${block.style.spacingAfter}px`
   if (Number.isInteger(block.style?.indent)) style.paddingLeft = `${block.style.indent}px`
