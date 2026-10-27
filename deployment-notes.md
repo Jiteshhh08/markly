@@ -230,6 +230,15 @@ curl -s -o /dev/null -w '%{http_code}\n' https://13-234-227-216.nip.io/api/v1/as
 - `vercel.json` rewrites `/api/:path*` and `/assets/:path*` to the API.
 - `VITE_API_URL` must exist and be empty for same-origin, then redeploy with build
   cache OFF.
+- **Gotcha (2026-10-27):** the Vercel rewrite does NOT match trailing-slash URLs
+  — `GET /api/v1/preferences/` 404s on Vercel (HTML body, no `error` field),
+  while the identical Express route matches fine locally. Keep every frontend
+  call slash-less (`/api/v1/preferences`, never `/api/v1/preferences/`); the
+  Vite dev proxy and Express hide this otherwise.
+- Set `ALLOWED_ORIGINS=https://<frontend-host>` on the API when traffic arrives
+  through the Vercel rewrite: the proxied request's `Host` is the destination
+  host, so cookie-authenticated mutations (PUT/POST) would otherwise fail the
+  same-origin CSRF check with 403 even after the GET starts working.
 
 ### 5.6 Deploying a code change later
 

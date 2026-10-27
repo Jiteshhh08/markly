@@ -37,7 +37,7 @@ async function preferencesRequest(path, { method = 'GET', body } = {}) {
 }
 
 export function fetchPreferences() {
-  return preferencesRequest('/')
+  return preferencesRequest('')
 }
 
 export function fetchPreferenceOptions() {
@@ -45,7 +45,7 @@ export function fetchPreferenceOptions() {
 }
 
 export function savePreferences(payload) {
-  return preferencesRequest('/', { method: 'PUT', body: payload })
+  return preferencesRequest('', { method: 'PUT', body: payload })
 }
 
 export function describePreferencesError(err) {
