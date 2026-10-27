@@ -32,8 +32,9 @@ describe("STAGE 2 idempotent TCET seed", () => {
 
     assert.equal(result.plan.tenant.action, "create");
     assert.equal(result.plan.department.action, "create");
+    assert.equal(result.plan.departments.length, 10);
     assert.equal(result.plan.template.action, "create");
-    assert.equal(result.applied.length, 3);
+    assert.equal(result.applied.length, 12);
 
     const tenant = await db.collection("tenants").findOne({ id: "tcet" });
     const department = await db
@@ -46,6 +47,9 @@ describe("STAGE 2 idempotent TCET seed", () => {
     assert.ok(tenant);
     assert.ok(department);
     assert.ok(template);
+    assert.equal(await db.collection("departments").countDocuments({ tenantId: "tcet" }), 10);
+    assert.equal(department.defaultTemplateId, SEED_ID);
+    assert.equal(department.defaultTemplateVersion, 1);
     assert.equal(template.scope, "college");
     assert.equal(template.tenantId, "tcet");
     assert.equal(template.departmentId, "tcet-computer-engineering");
@@ -129,12 +133,14 @@ describe("STAGE 2 idempotent TCET seed", () => {
   it("dry-run reports the plan without writing anything", async () => {
     await db.collection("templates").deleteMany({});
     await db.collection("tenants").deleteMany({ id: "tcet" });
-    await db.collection("departments").deleteMany({ id: "tcet-computer-engineering" });
+    await db.collection("departments").deleteMany({ tenantId: "tcet" });
 
     const dry = await runSeed({ db });
     assert.equal(dry.mode, "dry-run");
+    assert.equal(dry.plan.departments.length, 10);
     assert.equal(dry.plan.template.action, "create");
     assert.equal(await db.collection("templates").countDocuments({ id: SEED_ID }), 0);
     assert.equal(await db.collection("tenants").countDocuments({ id: "tcet" }), 0);
+    assert.equal(await db.collection("departments").countDocuments({ tenantId: "tcet" }), 0);
   });
 });

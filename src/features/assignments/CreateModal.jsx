@@ -107,6 +107,7 @@ export function CreateModal({
     Boolean(branchDefault) &&
     branchDefault.id === form.templateId &&
     String(branchDefault.version) === String(form.templateVersion)
+  const isBootstrapDefault = Boolean(selectedChoice?.isBootstrapDefault)
   const isPreferred =
     Boolean(preferred) &&
     preferred.id === form.templateId &&
@@ -233,14 +234,18 @@ export function CreateModal({
               <p className="truncate text-[12.5px] font-semibold text-ink-800">
                 {preferences?.college && preferences?.branch
                   ? `${preferences.college.name} · ${preferences.branch.name}`
-                  : preferences?.setupCompleted
-                    ? 'Private and platform templates'
-                    : 'College and branch not configured'}
+                  : isBootstrapDefault
+                    ? 'TCET · Computer Engineering (default)'
+                    : preferences?.setupCompleted
+                      ? 'Private and platform templates'
+                      : 'College and branch not configured'}
               </p>
               <p className="mt-0.5 truncate text-[11.5px] text-ink-400">
                 {branchDefault
                   ? `Branch default: ${branchDefault.name} v${branchDefault.version}`
-                  : 'No branch default set — choose an eligible template below.'}
+                  : isBootstrapDefault
+                    ? 'Computer Engineering default — choose a college and branch to change it.'
+                    : 'No branch default set — choose an eligible template below.'}
               </p>
             </div>
             {onOpenPreferences && (
@@ -253,11 +258,13 @@ export function CreateModal({
             label="Template"
             htmlFor="f-template"
             hint={
-              isBranchDefault
-                ? 'Using your branch default, pinned to this exact version.'
-                : isPreferred
-                  ? 'Using your saved preference, pinned to this exact version.'
-                  : 'Choose any other eligible template. The exact version is stored with the assignment.'
+              isBootstrapDefault
+                ? 'Using the Computer Engineering default because no college or branch is selected. Choose your preferences to switch.'
+                : isBranchDefault
+                  ? 'Using your branch default, pinned to this exact version.'
+                  : isPreferred
+                    ? 'Using your saved preference, pinned to this exact version.'
+                    : 'Choose any other eligible template. The exact version is stored with the assignment.'
             }
           >
             <select

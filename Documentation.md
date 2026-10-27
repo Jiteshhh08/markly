@@ -110,7 +110,9 @@ httpOnly cookie plus an in-memory Bearer copy.
 1. Input validation — `apps/api/src/schemas.js` (`generateInputSchema`; aim mandatory)
 2. Subject profile — `lib/subjects.js` ← `packages/shared/subject-profiles.json`
 3. Template resolution — `lib/templateResolution.js`; explicit `templateId` never
-   falls back, omitted id resolves a usable default and pins the exact version
+   falls back, omitted id resolves preferred → branch default → the TCET Computer
+   Engineering onboarding default for an unconfigured ordinary user → explicit
+   error. The resolved exact version is pinned on the assignment.
 4. Example retrieval — AI `corpus.retrieve_examples()` (style guidance only)
 5. Research planning/search/extraction — AI `search/research.py` (optional; failures
    never break generation)
@@ -161,7 +163,17 @@ AI service: `GET /health`, `POST /v1/generate`, `POST /v1/regenerate-section`,
   `private`, and `legacy`; authorization lives in `lib/templateAccess.js` and
   `lib/templateCatalogue.js`.
 - **Branch defaults:** exact `{id, version}` pointers on `Department`. Publishing a
-  newer version does not repoint them.
+  newer version does not repoint them. The Stage 1 seed creates TCET with ten
+  branches and pins Computer Engineering to `tcet-computer-engineering@1`.
+  Re-running the seed backfills missing branches and a missing Computer
+  Engineering default; it never overwrites an administrator-chosen default.
+- **Onboarding default:** `lib/bootstrapDefault.js` resolves the seeded TCET
+  Computer Engineering template only for an ordinary user with no saved college
+  and no college membership. `GET /templates` adds it with
+  `isBootstrapDefault: true` plus a top-level `bootstrapDefault` summary, and
+  generation records source `bootstrap_default`. Explicit template ids remain
+  strict: only the eligible unconfigured actor may pin this template, and an
+  explicit request from another college still returns the safe not-found error.
 - **Document blocks:** flat, validated block list in
   `lib/documentBlocks.js`; legacy content is projected on read. Document saves use
   optimistic revision checks and a per-assignment in-process lock.
@@ -192,8 +204,11 @@ history; no browser storage. The drawer includes section editing/regeneration,
 the document studio, LaTeX view/edit, and HTML/DOCX/PDF exports. Templates and
 admin screens cover versioned template management, scopes, branch defaults,
 colleges/branches, users, and audit. Preferences save the user's college/branch
-and optional pinned template. Every server call carries a timeout so stalls become
-errors, never infinite spinners. Running jobs are resumed on boot from `GET /jobs`.
+and optional pinned template. While no college/branch is selected, the Templates
+view shows the TCET Computer Engineering default with a banner and a direct
+"Choose college & branch" action; the create dialog preselects the same template.
+Every server call carries a timeout so stalls become errors, never infinite
+spinners. Running jobs are resumed on boot from `GET /jobs`.
 
 ## 9. Testing
 
@@ -209,7 +224,10 @@ compiler, and a real child-process API restart in Stage 7. Test databases are
 isolated and fail-closed to names containing the stage and `test` (for example
 `markly_stage7_workflow_test`). Production data is never targeted. Atlas
 connectivity can cause flaky runs; rerun the affected file individually and record
-the result honestly. Stage 7 PDF assertions are structural marker checks, not real
+the result honestly. `stage4-bootstrap-default.test.js` covers the TCET
+onboarding default, including the unconfigured-user catalogue marker, generation
+source, explicit-id eligibility, cross-college isolation, administrators, and an
+inactive branch. Stage 7 PDF assertions are structural marker checks, not real
 TeX compilation.
 
 ## 10. Security model

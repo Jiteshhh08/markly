@@ -78,7 +78,7 @@ function templateKey(template) {
   return `${template.id}@${template.version}`
 }
 
-export function TemplatesView({ templates, onRefresh, notify, onUse, onAuthRequired, session }) {
+export function TemplatesView({ templates, onRefresh, notify, onUse, onAuthRequired, onOpenPreferences, session }) {
   const [items, setItems] = useState(templates ?? [])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -92,6 +92,7 @@ export function TemplatesView({ templates, onRefresh, notify, onUse, onAuthRequi
   const [colleges, setColleges] = useState([])
   const [collegesLoading, setCollegesLoading] = useState(false)
   const [branches, setBranches] = useState([])
+  const [bootstrapDefault, setBootstrapDefault] = useState(null)
 
   const isAdmin = session?.role === 'platform_admin' || session?.role === 'college_admin'
 
@@ -124,7 +125,11 @@ export function TemplatesView({ templates, onRefresh, notify, onUse, onAuthRequi
         throw results.find((result) => result.status === 'rejected')?.reason ?? new Error('Templates are unavailable.')
       }
       const merged = new Map()
+      let nextBootstrap = null
       for (const result of fulfilled) {
+        if (!nextBootstrap && result.value.bootstrapDefault) {
+          nextBootstrap = result.value.bootstrapDefault
+        }
         for (const template of result.value.templates ?? []) {
           merged.set(templateKey(template), template)
         }
@@ -135,6 +140,7 @@ export function TemplatesView({ templates, onRefresh, notify, onUse, onAuthRequi
         return dateB - dateA || String(a.name ?? '').localeCompare(String(b.name ?? ''))
       })
       setItems(next)
+      setBootstrapDefault(nextBootstrap)
     } catch (err) {
       if (err?.status === 401) {
         onAuthRequired?.()
@@ -194,22 +200,34 @@ export function TemplatesView({ templates, onRefresh, notify, onUse, onAuthRequi
   const collegeNames = useMemo(() => {
     const map = new Map()
     for (const college of colleges) map.set(college.id, college.name || college.id)
+    if (bootstrapDefault?.collegeId) {
+      map.set(
+        bootstrapDefault.collegeId,
+        bootstrapDefault.collegeName || bootstrapDefault.collegeId,
+      )
+    }
     for (const template of items) {
       if (template.tenantId && !map.has(template.tenantId)) map.set(template.tenantId, template.tenantId)
     }
     return map
-  }, [colleges, items])
+  }, [bootstrapDefault, colleges, items])
 
   const branchNames = useMemo(() => {
     const map = new Map()
     for (const branch of branches) map.set(branch.id, branch.name || branch.id)
+    if (bootstrapDefault?.branchId) {
+      map.set(
+        bootstrapDefault.branchId,
+        bootstrapDefault.branchName || bootstrapDefault.branchId,
+      )
+    }
     for (const template of items) {
       if (template.departmentId && !map.has(template.departmentId)) {
         map.set(template.departmentId, template.departmentId)
       }
     }
     return map
-  }, [branches, items])
+  }, [bootstrapDefault, branches, items])
 
   const collegeOptions = useMemo(() => [...collegeNames.entries()], [collegeNames])
   const branchOptions = useMemo(() => {
@@ -240,6 +258,18 @@ export function TemplatesView({ templates, onRefresh, notify, onUse, onAuthRequi
 
   const privateCount = items.filter((template) => template.scope === 'private').length
   const sharedCount = items.length - privateCount
+
+  const bootstrapItem = useMemo(
+    () => items.find((template) => template.isBootstrapDefault) ?? null,
+    [items],
+  )
+  const sessionPreferences = session?.preferences ?? null
+  const hasCollege = Boolean(sessionPreferences?.collegeId)
+  const hasMemberships = Array.isArray(session?.tenantIds) && session.tenantIds.length > 0
+  const showBootstrapBanner =
+    !isAdmin && !hasCollege && !hasMemberships && Boolean(bootstrapDefault ?? bootstrapItem)
+  const bootstrapCollegeName = bootstrapDefault?.collegeName || 'TCET'
+  const bootstrapBranchName = bootstrapDefault?.branchName || 'Computer Engineering'
 
   const resetFilters = useCallback(() => {
     setQuery('')
@@ -292,6 +322,28 @@ export function TemplatesView({ templates, onRefresh, notify, onUse, onAuthRequi
           </>
         }
       />
+
+      {showBootstrapBanner && (
+        <div className="flex flex-col gap-3 rounded-xl border border-sand-400/60 bg-sand-50 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex items-start gap-2.5">
+            <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-sand-100 text-sand-700">
+              <Icon name="grid" className="h-3.5 w-3.5" />
+            </span>
+            <div>
+              <p className="text-[13px] font-bold text-ink-900">No college or branch selected</p>
+              <p className="mt-0.5 text-[12.5px] leading-relaxed text-ink-500">
+                {bootstrapCollegeName} · {bootstrapBranchName} is being used as the default template.
+                Choose your college and branch to see your own department templates.
+              </p>
+            </div>
+          </div>
+          {onOpenPreferences && (
+            <Button variant="secondary" size="sm" onClick={onOpenPreferences} className="shrink-0 bg-white">
+              Choose college &amp; branch
+            </Button>
+          )}
+        </div>
+      )}
 
       <div className="grid grid-cols-1 gap-2 rounded-xl border border-line bg-white p-3 sm:grid-cols-2 lg:grid-cols-[minmax(0,1fr)_10rem_10rem_11rem_11rem]">
         <SearchBar value={query} onChange={setQuery} placeholder="Search by name, id, college or branch…" />
@@ -381,6 +433,7 @@ export function TemplatesView({ templates, onRefresh, notify, onUse, onAuthRequi
                     <div className="flex flex-wrap items-center gap-1.5">
                       <p className="min-w-0 truncate text-[14px] font-bold tracking-tight">{template.name}</p>
                       <Badge tone={scopeTone(template.scope)}>{scopeLabel(template.scope)}</Badge>
+                      {template.isBootstrapDefault && <Badge tone="sand">Default</Badge>}
                     </div>
                     <p className="mt-1 truncate text-[11.5px] font-medium text-ink-400">
                       {template.id} · v{template.version}
@@ -394,6 +447,10 @@ export function TemplatesView({ templates, onRefresh, notify, onUse, onAuthRequi
                 <div className="mt-2 flex flex-wrap items-center gap-2 text-[11.5px] text-ink-400">
                   {privateTemplate ? (
                     <span className="font-semibold text-sand-700">Private — only you can view this</span>
+                  ) : template.isBootstrapDefault ? (
+                    <span className="font-semibold text-sand-700">
+                      Default while no college or branch is selected
+                    </span>
                   ) : (
                     <span>{template.scope === 'platform' ? 'Available across colleges' : 'Shared within its college scope'}</span>
                   )}

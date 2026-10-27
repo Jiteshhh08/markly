@@ -942,6 +942,7 @@ export default function App() {
               notify={pushToast}
               onUse={(t) => { setPrefill({ templateId: t.id, templateVersion: t.version }); setCreateOpen(true) }}
               onAuthRequired={handleAuthRequired}
+              onOpenPreferences={() => { if (ensureSession()) openPreferences(false) }}
               session={session}
             />
           )}

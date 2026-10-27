@@ -41,6 +41,7 @@ export function normalizeTemplate(template) {
     departmentId: template.departmentId ?? template.branchId ?? null,
     ownerUserId: template.ownerUserId ?? null,
     available: template.available !== false,
+    isBootstrapDefault: template.isBootstrapDefault === true,
   }
 }
 
@@ -53,6 +54,10 @@ export function isTemplateEligible(template, { collegeId = null, departmentId = 
   const t = normalizeTemplate(template)
   if (!t || !isUsableTemplate(t)) return false
   if (t.scope === TEMPLATE_SCOPE_PLATFORM || t.scope === TEMPLATE_SCOPE_PRIVATE) return true
+  // The onboarding default is the one college-scoped template an unconfigured
+  // user may select. Once a college is chosen, normal scope checks apply so it
+  // cannot leak across colleges.
+  if (t.isBootstrapDefault && !collegeId) return true
   if (t.scope !== TEMPLATE_SCOPE_COLLEGE) return false
   if (!collegeId || t.tenantId !== collegeId) return false
   if (t.departmentId && t.departmentId !== departmentId) return false
@@ -113,7 +118,9 @@ export function buildScopedTemplateChoices({
 
   add(preferredTemplate, { isPreferred: true })
   add(branchDefault, { isBranchDefault: true })
-  for (const template of templates) add(template)
+  for (const template of templates) {
+    add(template, template?.isBootstrapDefault ? { isBootstrapDefault: true } : {})
+  }
   return out
 }
 
@@ -165,6 +172,7 @@ export function initialTemplateSelection({
   const chosen =
     choices.find((template) => template.isPreferred) ??
     choices.find((template) => template.isBranchDefault) ??
+    choices.find((template) => template.isBootstrapDefault) ??
     choices[0] ??
     null
   if (!chosen) return { templateId: '', templateVersion: '' }
@@ -185,6 +193,7 @@ export function templateLabel(template, { branchDefault = false, preferred = fal
   const t = normalizeTemplate(template)
   if (!t) return ''
   const tags = []
+  if (t.isBootstrapDefault) tags.push('default')
   if (branchDefault) tags.push('branch default')
   if (preferred) tags.push('your preference')
   if (t.scope === TEMPLATE_SCOPE_PLATFORM) tags.push('platform')

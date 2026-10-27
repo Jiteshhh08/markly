@@ -3,6 +3,11 @@ import { Department, Tenant } from "../models/index.js";
 import { loadActor } from "./roles.js";
 import { canUseTemplate, templateScope } from "./templateAccess.js";
 import {
+  isBootstrapDefaultTemplate,
+  isBootstrapEligibleActor,
+  loadBootstrapDefaultTemplate,
+} from "./bootstrapDefault.js";
+import {
   ensureTemplatesLoaded,
   getTemplateVersionAuthoritative,
   selectDefaultTemplateAuthoritative,
@@ -148,7 +153,9 @@ async function resolveBranchDefaultTemplate(actor) {
  *   1. an explicit, eligible templateId (+ optional exact version)
  *   2. the user's saved preferred template, while it is still usable
  *   3. the saved branch's exact configured default id + version
- *   4. an actionable error
+ *   4. the TCET Computer Engineering onboarding default, only for an ordinary
+ *      user with no saved college and no college membership
+ *   5. an actionable error
  *
  * An explicit id NEVER falls back: choosing another college's template, a
  * private template owned by someone else, or an archived version is an error.
@@ -157,8 +164,9 @@ async function resolveBranchDefaultTemplate(actor) {
  *
  * Anonymous and memory-only callers retain the pre-Stage-4 global default:
  * there is no persisted user whose college/branch could be consulted. A
- * MongoDB-backed authenticated user without saved preferences gets a clear
- * setup error instead of a silent global template.
+ * MongoDB-backed authenticated user without saved preferences gets the
+ * onboarding default when the TCET seed exists, and a clear setup error
+ * otherwise instead of a silent global template.
  */
 export async function resolveTemplateForGeneration({
   templateId,
@@ -174,7 +182,18 @@ export async function resolveTemplateForGeneration({
       requestedVersion == null
         ? await getTemplateVersionAuthoritative(templateId)
         : await getTemplateVersionAuthoritative(templateId, requestedVersion);
-    if (!template || !canUseTemplate(effectiveActor, template)) {
+    let allowed = Boolean(template && canUseTemplate(effectiveActor, template));
+    if (
+      !allowed &&
+      template &&
+      isBootstrapDefaultTemplate(template) &&
+      isBootstrapEligibleActor(effectiveActor)
+    ) {
+      // An unconfigured ordinary user may pin the onboarding default even
+      // though it belongs to the TCET Computer Engineering college scope.
+      allowed = Boolean(await loadBootstrapDefaultTemplate());
+    }
+    if (!template || !allowed) {
       // Do not reveal whether a template exists in another college or belongs
       // to another user: both cases are the same safe not-found response.
       throw new TemplateResolutionError("The selected template is unavailable.", {
@@ -220,6 +239,20 @@ export async function resolveTemplateForGeneration({
       snapshot: templateSnapshot(branchDefault.template),
       source: "branch_default",
     };
+  }
+
+  // Onboarding fallback: only an ordinary user with no saved college and no
+  // college membership reaches this point. Once any college preference or
+  // membership exists, the branch-scoped rules above/below apply unchanged.
+  if (isBootstrapEligibleActor(effectiveActor)) {
+    const bootstrap = await loadBootstrapDefaultTemplate();
+    if (bootstrap) {
+      return {
+        template: bootstrap,
+        snapshot: templateSnapshot(bootstrap),
+        source: "bootstrap_default",
+      };
+    }
   }
 
   const preferences = effectiveActor.preferences;

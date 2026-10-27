@@ -67,6 +67,13 @@ const PRIVATE = template({
   departmentId: null,
   ownerUserId: "user-a",
 });
+const BOOTSTRAP = template({
+  id: "tcet-computer-engineering",
+  name: "TCET Computer Engineering Practical",
+  tenantId: "tcet",
+  departmentId: "tcet-computer-engineering",
+  isBootstrapDefault: true,
+});
 
 const PREFERENCES = {
   setupCompleted: true,
@@ -113,6 +120,46 @@ describe("STAGE 4 template eligibility helpers", () => {
     assert.equal(isTemplateEligible(OTHER, { collegeId: COLLEGE, departmentId: BRANCH }), true);
     assert.equal(isTemplateEligible(OTHER, { collegeId: null, departmentId: null }), false);
     assert.equal(isUsableTemplate({ ...OTHER, available: false }), true, "available is a server hint, not a status");
+  });
+
+  it("treats the onboarding default as eligible only until a college is chosen", () => {
+    assert.equal(normalizeTemplate(BOOTSTRAP).isBootstrapDefault, true);
+    assert.equal(isTemplateEligible(BOOTSTRAP, {}), true);
+    assert.equal(
+      isTemplateEligible(BOOTSTRAP, {
+        collegeId: "tcet",
+        departmentId: "tcet-computer-engineering",
+      }),
+      true,
+    );
+    assert.equal(
+      isTemplateEligible(BOOTSTRAP, { collegeId: COLLEGE, departmentId: BRANCH }),
+      false,
+      "the TCET default must not leak into another college",
+    );
+
+    assert.equal(
+      initialTemplateSelection({ templates: [PLATFORM, BOOTSTRAP], preferences: null }).templateId,
+      BOOTSTRAP.id,
+      "an unconfigured user starts on the Computer Engineering default",
+    );
+    assert.equal(
+      buildScopedTemplateChoices({
+        templates: [BOOTSTRAP],
+        collegeId: COLLEGE,
+        departmentId: BRANCH,
+      }).length,
+      0,
+    );
+    assert.equal(
+      buildScopedTemplateChoices({
+        templates: [BOOTSTRAP],
+        collegeId: "tcet",
+        departmentId: "tcet-computer-engineering",
+      }).length,
+      1,
+    );
+    assert.match(templateLabel(BOOTSTRAP), /default/);
   });
 
   it("builds choices in preferred → branch default → other order without duplicates", () => {
@@ -272,6 +319,7 @@ describe("STAGE 4 frontend wiring pins", () => {
   const app = readSrc("src/App.jsx");
   const profile = readSrc("src/features/auth/ProfileMenu.jsx");
   const ui = readSrc("src/components/ui.jsx");
+  const templatesView = readSrc("src/views/TemplatesView.jsx");
 
   it("removes the generic default option and pins the exact version when submitting", () => {
     assert.ok(
@@ -307,5 +355,15 @@ describe("STAGE 4 frontend wiring pins", () => {
     assert.ok(profile.includes("College &amp; branch"));
     assert.ok(profile.includes("describePreferencesSummary"));
     assert.ok(ui.includes("stacked"), "ModalShell must support stacking preferences over create");
+  });
+
+  it("shows the onboarding-default banner and card badge", () => {
+    assert.ok(templatesView.includes("No college or branch selected"));
+    assert.ok(templatesView.includes("isBootstrapDefault"));
+    assert.ok(templatesView.includes("Choose college"));
+    assert.ok(
+      app.includes("onOpenPreferences={() => { if (ensureSession()) openPreferences(false) }}"),
+      "the banner must open the real preferences flow",
+    );
   });
 });

@@ -117,6 +117,24 @@ board and users live only in process memory.
   or a new branch default is published.
 - A branch default stores `{ defaultTemplateId, defaultTemplateVersion }`; it is a
   pinned pointer, not a floating "latest" reference.
+- The Stage 1 seed creates one college, **TCET**, with ten branches: Computer
+  Engineering; Information Technology; Electronics & Telecommunication
+  Engineering; Electronics and Computer Science; Mechanical Engineering; Civil
+  Engineering; Artificial Intelligence & Machine Learning (AI & ML); Artificial
+  Intelligence & Data Science (AI & DS); Computer Science and Engineering
+  (Internet of Things / IoT); and Computer Science and Engineering (Cyber
+  Security). The Computer Engineering branch is seeded with the pinned default
+  `tcet-computer-engineering@1`.
+- **Onboarding default:** while an ordinary user has no saved college and no
+  college membership, `GET /templates` includes the TCET Computer Engineering
+  template with `isBootstrapDefault: true` and a top-level `bootstrapDefault`
+  object. Generation resolves it with source `bootstrap_default`, and the
+  Templates view shows a banner explaining that no college/branch is selected.
+  The fallback is disabled for administrators, college members, and users with a
+  saved college preference; normal college/branch isolation applies as soon as a
+  preference exists. The seed can be re-run safely: it backfills missing branches
+  and a missing Computer Engineering default without overwriting an
+  administrator-chosen default.
 
 ## Persistence and durability
 

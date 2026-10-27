@@ -1,13 +1,13 @@
 import { after, before, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { connectStage1TestDb, disconnectStage1TestDb } from "./helpers/testDb.js";
-import { planSeed, runSeed, seedDefinitions } from "../src/lib/multicollegeSeed.js";
+import { runSeed, seedDefinitions } from "../src/lib/multicollegeSeed.js";
 
 let db;
 
 async function cleanup() {
   await db.collection("tenants").deleteMany({ id: "tcet" });
-  await db.collection("departments").deleteMany({ id: "tcet-computer-engineering" });
+  await db.collection("departments").deleteMany({ tenantId: "tcet" });
   await db.collection("templates").deleteMany({ id: "tcet-computer-engineering", version: 1 });
   await db.collection("assignments").deleteMany({ recordId: /^stage1seed_/ });
 }
@@ -35,6 +35,8 @@ describe("STAGE 1 idempotent multicollege seed", () => {
     assert.equal(defs.tenant.slug, "tcet");
     assert.equal(defs.department.id, "tcet-computer-engineering");
     assert.equal(defs.department.tenantId, "tcet");
+    assert.equal(defs.department.defaultTemplateId, "tcet-computer-engineering");
+    assert.equal(defs.department.defaultTemplateVersion, 1);
     assert.equal(defs.template.id, "tcet-computer-engineering");
     assert.equal(defs.template.tenantId, "tcet");
     assert.equal(defs.template.departmentId, "tcet-computer-engineering");
@@ -43,6 +45,28 @@ describe("STAGE 1 idempotent multicollege seed", () => {
     assert.equal(defs.template.page.size, "A4");
     assert.equal(defs.template.typography.baseSize, "12pt");
     assert.equal(hasDollarKey(defs.template), false, "Mongo comment metadata must be stripped");
+
+    assert.equal(defs.departments.length, 10);
+    assert.deepEqual(
+      defs.departments.map((department) => department.name),
+      [
+        "Computer Engineering",
+        "Information Technology",
+        "Electronics & Telecommunication Engineering",
+        "Electronics and Computer Science",
+        "Mechanical Engineering",
+        "Civil Engineering",
+        "Artificial Intelligence & Machine Learning (AI & ML)",
+        "Artificial Intelligence & Data Science (AI & DS)",
+        "Computer Science and Engineering (Internet of Things / IoT)",
+        "Computer Science and Engineering (Cyber Security)",
+      ],
+    );
+    assert.equal(
+      defs.departments.filter((department) => department.defaultTemplateId).length,
+      1,
+      "only the Computer Engineering branch is the seeded default",
+    );
   });
 
   it("dry-runs by default and requires the exact database name to write", async () => {
@@ -51,8 +75,11 @@ describe("STAGE 1 idempotent multicollege seed", () => {
     assert.equal(dryRun.mode, "dry-run");
     assert.equal(dryRun.plan.tenant.action, "create");
     assert.equal(dryRun.plan.department.action, "create");
+    assert.equal(dryRun.plan.departments.length, 10);
+    assert.equal(dryRun.plan.departments.every((branch) => branch.action === "create"), true);
     assert.equal(dryRun.plan.template.action, "create");
     assert.equal(await db.collection("tenants").countDocuments({ id: "tcet" }), 0);
+    assert.equal(await db.collection("departments").countDocuments({ tenantId: "tcet" }), 0);
 
     await assert.rejects(
       () => runSeed({ db, apply: true, confirmDb: "not-this-db" }),
@@ -71,8 +98,9 @@ describe("STAGE 1 idempotent multicollege seed", () => {
 
     const first = await runSeed({ db, apply: true, confirmDb: db.databaseName });
     assert.equal(first.mode, "apply");
-    assert.equal(first.applied.length, 3);
+    assert.equal(first.applied.length, 12);
     assert.equal(await db.collection("tenants").countDocuments({ id: "tcet" }), 1);
+    assert.equal(await db.collection("departments").countDocuments({ tenantId: "tcet" }), 10);
     assert.equal(await db.collection("departments").countDocuments({ id: "tcet-computer-engineering" }), 1);
     assert.equal(
       await db.collection("templates").countDocuments({ id: "tcet-computer-engineering", version: 1 }),
@@ -85,6 +113,8 @@ describe("STAGE 1 idempotent multicollege seed", () => {
     const department = await db.collection("departments").findOne({ id: "tcet-computer-engineering" });
     assert.equal(department.tenantId, "tcet");
     assert.equal(department.seedKey, "stage1:tcet:department");
+    assert.equal(department.defaultTemplateId, "tcet-computer-engineering");
+    assert.equal(department.defaultTemplateVersion, 1);
     const template = await db.collection("templates").findOne({ id: "tcet-computer-engineering", version: 1 });
     assert.equal(template.scope, "college");
     assert.equal(template.ownerUserId, null);
@@ -107,14 +137,58 @@ describe("STAGE 1 idempotent multicollege seed", () => {
 
     const assignmentAfter = await db.collection("assignments").findOne({ recordId: "stage1seed_assignment" });
     assert.deepEqual(assignmentAfter, assignmentBefore, "seed must not touch assignments");
+  });
 
-    const plan = planSeed({
-      tenants: [tenant],
-      departments: [department],
-      templates: [template],
-    });
-    assert.equal(plan.tenant.action, "skip");
-    assert.equal(plan.department.action, "skip");
-    assert.equal(plan.template.action, "skip");
+  it("backfills missing branches and a missing Computer Engineering default without overwriting an admin choice", async () => {
+    await db.collection("departments").deleteOne({ id: "tcet-information-technology" });
+    await db.collection("departments").updateOne(
+      { id: "tcet-computer-engineering" },
+      { $unset: { defaultTemplateId: "", defaultTemplateVersion: "" } },
+    );
+
+    const backfill = await runSeed({ db, apply: true, confirmDb: db.databaseName });
+    assert.ok(
+      backfill.applied.some(
+        (entry) =>
+          entry.collection === "departments" &&
+          entry.id === "tcet-information-technology",
+      ),
+      JSON.stringify(backfill.applied),
+    );
+    assert.ok(
+      backfill.applied.some(
+        (entry) =>
+          entry.collection === "departments" &&
+          entry.id === "tcet-computer-engineering" &&
+          entry.action === "default",
+      ),
+      JSON.stringify(backfill.applied),
+    );
+    const restored = await db
+      .collection("departments")
+      .findOne({ id: "tcet-computer-engineering" });
+    assert.equal(restored.defaultTemplateId, "tcet-computer-engineering");
+    assert.equal(restored.defaultTemplateVersion, 1);
+
+    await db.collection("departments").updateOne(
+      { id: "tcet-computer-engineering" },
+      { $set: { defaultTemplateId: "admin-chosen-template", defaultTemplateVersion: 7 } },
+    );
+    const preserved = await runSeed({ db, apply: true, confirmDb: db.databaseName });
+    assert.equal(
+      preserved.applied.some(
+        (entry) =>
+          entry.collection === "departments" &&
+          entry.id === "tcet-computer-engineering" &&
+          entry.action === "default",
+      ),
+      false,
+      "an administrator-chosen default must never be overwritten",
+    );
+    const chosen = await db
+      .collection("departments")
+      .findOne({ id: "tcet-computer-engineering" });
+    assert.equal(chosen.defaultTemplateId, "admin-chosen-template");
+    assert.equal(chosen.defaultTemplateVersion, 7);
   });
 });

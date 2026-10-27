@@ -142,6 +142,32 @@ Before any redeploy:
 10. **Multi-instance caveat.** Job status/progress and rate-limit windows are
     process-local; use a shared store before scaling horizontally.
 
+### 4.1 TCET seed / branch backfill
+
+The onboarding default depends on the Stage 1 seed having created the `tcet`
+college, all ten branches, and the Computer Engineering template. Apply it before
+enabling the Templates banner in a new environment. From `apps/api`, with
+`MONGODB_URI` pointing at the intended database:
+
+```bash
+node scripts/seed-multicollege.js
+node scripts/seed-multicollege.js --apply --confirm-db <exact-db>
+```
+
+The first command is a dry-run. The seed is idempotent: it inserts only missing
+documents and backfills a missing `tcet-computer-engineering` branch default. It
+never overwrites an administrator-chosen default, and it never touches
+assignments. Production writes still require the documented
+`ALLOW_PRODUCTION_DB_WRITE=1` opt-in.
+
+The onboarding fallback is active only while the `tcet` Tenant and
+`tcet-computer-engineering` Department exist and the template is published. It is
+shown to ordinary users with no saved college and no college membership;
+administrators, college members, and users with a saved college preference keep
+normal college/branch isolation. If the branch is deactivated or the template is
+archived, the fallback disappears and those users receive the existing
+preferences-required error instead of a cross-college template.
+
 ---
 
 ## 5. Setup (historical, corrected)
@@ -261,6 +287,12 @@ ls data/tex/
 - **Preferences are self-asserted.** Any authenticated user can select any active
   college/branch, so college-shared templates are not confidential from a user who
   selects that college.
+- **Onboarding default is an intentional cross-college exception.** Until an
+  ordinary user saves a college/branch or joins a college, the Templates catalogue
+  and generation may use the seeded TCET Computer Engineering template. The
+  exception is disabled for administrators, college members, and any user with a
+  saved college preference. Deactivating the TCET branch or archiving the template
+  removes it.
 - **Legacy ownerless assignments** remain visible to authenticated users for
   migration compatibility.
 - **`User.email` is not unique.** Concurrent registrations are guarded by an

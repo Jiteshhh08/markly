@@ -32,6 +32,10 @@ import {
 } from "../lib/templateCatalogue.js";
 import { requestActor } from "../lib/templateResolution.js";
 import {
+  isBootstrapEligibleActor,
+  loadBootstrapDefault,
+} from "../lib/bootstrapDefault.js";
+import {
   TemplateValidationError,
   assertTemplateStatusTransition,
   pickTemplateRuntimeFields,
@@ -74,6 +78,18 @@ function summary(t, updatedAt = null) {
     departmentId: t.departmentId ?? null,
     ownerUserId: t.ownerUserId ?? null,
     updatedAt: updatedAt ?? t.updatedAt ?? null,
+  };
+}
+
+function bootstrapSummary(found) {
+  return {
+    id: found.template.id,
+    version: found.template.version,
+    name: found.template.name ?? "",
+    collegeId: found.college.id,
+    collegeName: found.college.name ?? "",
+    branchId: found.branch.id,
+    branchName: found.branch.name ?? "",
   };
 }
 
@@ -463,7 +479,30 @@ templatesRouter.get("/", async (req, res) => {
         return template.status === statusFilter;
       })
       .map(({ template, updatedAt, createdAt }) => summary(template, updatedAt ?? createdAt));
-    return res.json({ templates });
+
+    // Onboarding fallback: an ordinary user with no college/branch preference
+    // and no college membership gets the seeded TCET Computer Engineering
+    // template marked as the current default. Explicit scopes and configured
+    // users keep normal college/branch isolation.
+    let bootstrapDefault = null;
+    if (!context.explicit && isBootstrapEligibleActor(context.actor)) {
+      const found = await loadBootstrapDefault();
+      if (found) {
+        bootstrapDefault = bootstrapSummary(found);
+        const key = `${found.template.id}@${found.template.version}`;
+        const existing = templates.find((template) => `${template.id}@${template.version}` === key);
+        if (existing) {
+          existing.isBootstrapDefault = true;
+        } else if (
+          (scopeFilter === undefined || scopeFilter === "college") &&
+          (statusFilter === undefined || statusFilter === "published" || statusFilter === "active")
+        ) {
+          templates.unshift({ ...summary(found.template), isBootstrapDefault: true });
+        }
+      }
+    }
+
+    return res.json({ templates, bootstrapDefault });
   } catch (err) {
     return sendError(res, 503, "Templates are temporarily unavailable. Please try again.", err);
   }
