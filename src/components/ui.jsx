@@ -265,17 +265,17 @@ export function ErrorState({ title = 'Unable to connect', body = "We couldn't re
 
 /* --------------------------------- Modal -------------------------------- */
 
-export function ModalShell({ title, subtitle, onClose, wide, children, footer }) {
+export function ModalShell({ title, subtitle, onClose, wide, extraWide, stacked = false, children, footer }) {
   return (
-    <div className="fixed inset-0 z-50 flex items-end justify-center sm:items-center sm:p-4">
-      <div className="mk-fade absolute inset-0 bg-pine-950/45" onClick={onClose} />
+    <div className={cx('fixed inset-0 flex items-end justify-center sm:items-center sm:p-4', stacked ? 'z-[55]' : 'z-50')}>
+      <div className={cx('mk-fade absolute inset-0', stacked ? 'bg-pine-950/55' : 'bg-pine-950/45')} onClick={onClose} />
       <div
         role="dialog"
         aria-modal="true"
         className={cx(
           'mk-pop relative flex max-h-[94vh] w-full flex-col overflow-hidden bg-white shadow-[0_20px_60px_rgba(15,46,45,0.35)]',
           'rounded-t-2xl sm:rounded-2xl',
-          wide ? 'sm:max-w-2xl' : 'sm:max-w-lg',
+          extraWide ? 'sm:max-w-5xl' : wide ? 'sm:max-w-2xl' : 'sm:max-w-lg',
         )}
       >
         <div className="flex items-start gap-3 border-b border-line-soft px-5 py-4">

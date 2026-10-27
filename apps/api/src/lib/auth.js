@@ -1,11 +1,20 @@
+import { randomUUID } from "node:crypto";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
+import { isProduction } from "./cors.js";
 
 // Minimal local auth (Phase 9). Users live in memory in dev; Mongo persistence
-// is best-effort when connected. Set AUTH_REQUIRED=1 to enforce tokens on
-// write endpoints; otherwise the API runs open for local development.
+// is required in production (registration/profile changes fail closed when it
+// is unavailable). Set AUTH_REQUIRED=1 to enforce tokens on write endpoints;
+// otherwise the API runs open for local development.
 
 const users = new Map(); // email -> { id, email, name, passwordHash, tenantIds }
+
+function storageUnavailable() {
+  const err = new Error("Account storage is unavailable");
+  err.status = 503;
+  return err;
+}
 
 function secret() {
   // A publicly documented placeholder must never become a real signing key:
@@ -20,17 +29,38 @@ function secret() {
   return "dev-only-insecure-secret";
 }
 
-export async function registerUser({ email, password, name }) {
+export async function registerUser({ email, password, name } = {}) {
   const key = String(email ?? "").toLowerCase().trim();
   if (!key.includes("@")) throw new Error("Valid email is required");
   if (!password || String(password).length < 8) throw new Error("Password must be at least 8 chars");
   if (users.has(key)) throw new Error("Email already registered");
+
+  // Memory can be cold after a restart. Check the durable account too, so a
+  // public registration can never attach to or overwrite an existing
+  // (possibly admin) user. This includes legacy docs without a password hash:
+  // they must be recovered administratively, never claimed by registration.
+  const persisted = await findPersistedAccount(key);
+  if (persisted) throw new Error("Email already registered");
+
   const passwordHash = await bcrypt.hash(String(password), 10);
-  const user = { id: `usr_${Date.now()}`, email: key, name: name ?? "", passwordHash, tenantIds: [] };
+  // Public registration accepts identity credentials only. `role`,
+  // `collegeAdminOf`, `tenantIds` and preferences are intentionally ignored.
+  const user = {
+    id: `usr_${randomUUID()}`,
+    email: key,
+    name: name ?? "",
+    passwordHash,
+    tenantIds: [],
+  };
   users.set(key, user);
   // Awaited: the account must be durable before the first token is trusted.
   // Still non-fatal without Mongo (dev open mode) — tryPersist swallows there.
-  await tryPersist(user);
+  try {
+    await tryPersist(user);
+  } catch (err) {
+    users.delete(key);
+    throw err;
+  }
   return signToken(user);
 }
 
@@ -76,6 +106,20 @@ export async function hydrateUsersFromMongo() {
   }
 }
 
+// Any persisted account, including legacy docs without a usable password
+// hash. Registration uses this to fail closed; login uses findPersistedUser,
+// which only returns accounts that can actually satisfy bcrypt.
+async function findPersistedAccount(key) {
+  try {
+    const mongoose = (await import("mongoose")).default;
+    if (mongoose.connection.readyState !== 1) return null;
+    const { User } = await import("../models/index.js");
+    return await User.findOne({ email: key }).lean();
+  } catch {
+    return null;
+  }
+}
+
 async function findPersistedUser(key) {
   try {
     const mongoose = (await import("mongoose")).default;
@@ -94,6 +138,13 @@ async function findPersistedUser(key) {
   } catch {
     return null;
   }
+}
+
+// Fail fast at process startup when auth is enforced but the signing key is a
+// documented placeholder. Without this, the server boots and every auth
+// request fails later with a 500 instead of refusing to start.
+export function assertAuthConfiguration() {
+  if (process.env.AUTH_REQUIRED === "1") secret();
 }
 
 export function signToken(user) {
@@ -191,12 +242,96 @@ export function requireAuthIfEnabled(req, res, next) {
 async function tryPersist(user) {
   try {
     const mongoose = (await import("mongoose")).default;
-    if (mongoose.connection.readyState !== 1) return;
+    if (mongoose.connection.readyState !== 1) {
+      if (isProduction()) throw storageUnavailable();
+      return;
+    }
     const { User } = await import("../models/index.js");
+
+    // Fail closed on ANY existing account. In particular, never "reclaim" a
+    // legacy admin account (no passwordHash) through public registration.
+    const existing = await User.findOne({ email: user.email }).lean();
+    if (existing) throw new Error("Email already registered");
+
     // STAGE 4: the hash MUST be persisted — stripping it (as before) wrote a
     // Mongo copy that could never satisfy bcrypt login after a restart.
-    await User.updateOne({ email: user.email }, { $set: user }, { upsert: true });
-  } catch {
-    // Non-fatal in local mode.
+    // New accounts are always ordinary users; privilege is granted only by an
+    // explicit administrative action. `upsertedCount` distinguishes a real
+    // insert from a concurrent registration that won the race.
+    const result = await User.updateOne(
+      { email: user.email },
+      { $setOnInsert: { ...user, role: "user", collegeAdminOf: [] } },
+      { upsert: true },
+    );
+    if (!result.upsertedCount) throw new Error("Email already registered");
+  } catch (err) {
+    if (String(err?.message ?? "").includes("already registered")) throw err;
+    if (err?.code === 11000) throw new Error("Email already registered");
+    // Production must not return a token for an account that only exists in
+    // process memory. Local dev and tests keep the memory-only fallback.
+    if (isProduction()) throw storageUnavailable();
+    if (err?.status === 503) throw err;
   }
+}
+
+function memoryUserById(id) {
+  const key = String(id ?? "").trim();
+  if (!key) return null;
+  for (const user of users.values()) {
+    if (String(user.id) === key) return user;
+  }
+  return null;
+}
+
+/**
+ * Update only public profile fields. This is the single profile mutation
+ * helper: role, collegeAdminOf, tenantIds and preferences are not accepted,
+ * even if present in the request body.
+ */
+export async function updateProfileForUser(userId, patch = {}) {
+  const id = String(userId ?? "").trim();
+  if (!id) throw new Error("Authentication required");
+
+  const allowed = {};
+  if (patch?.name !== undefined) {
+    if (typeof patch.name !== "string") throw new Error("Name must be a string");
+    const name = patch.name.trim();
+    if (name.length > 120) throw new Error("Name is too long");
+    allowed.name = name;
+  }
+  if (patch?.avatarUrl !== undefined) {
+    if (typeof patch.avatarUrl !== "string") throw new Error("Avatar URL must be a string");
+    const avatarUrl = patch.avatarUrl.trim();
+    if (avatarUrl.length > 2048) throw new Error("Avatar URL is too long");
+    allowed.avatarUrl = avatarUrl;
+  }
+  if (Object.keys(allowed).length === 0) throw new Error("No profile fields to update");
+
+  const memory = memoryUserById(id);
+  const mongoose = (await import("mongoose")).default;
+  if (mongoose.connection.readyState === 1) {
+    const { User } = await import("../models/index.js");
+    try {
+      const result = await User.updateOne({ id }, { $set: allowed });
+      let matched = result.matchedCount;
+      if (!matched && mongoose.Types.ObjectId.isValid(id)) {
+        const byObjectId = await User.updateOne({ _id: id }, { $set: allowed });
+        matched = byObjectId.matchedCount;
+      }
+      // A persisted actor whose document cannot be updated must not receive a
+      // success response in production; the next request would show old data.
+      if (!matched && isProduction()) throw storageUnavailable();
+    } catch (err) {
+      if (err?.status === 503 || !isProduction()) throw err;
+      throw storageUnavailable();
+    }
+  } else if (isProduction()) {
+    throw storageUnavailable();
+  }
+
+  if (memory) Object.assign(memory, allowed);
+  if (memory) {
+    return { id: memory.id, email: memory.email, name: memory.name ?? "", avatarUrl: memory.avatarUrl ?? "" };
+  }
+  return { id, name: allowed.name ?? "", avatarUrl: allowed.avatarUrl ?? "" };
 }

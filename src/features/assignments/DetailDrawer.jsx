@@ -8,7 +8,32 @@ import { Icon, Spinner } from '../../components/icons.jsx'
 import { CodeBlock, SectionHeading, SubjectTag } from './AssignmentUI.jsx'
 import { EDITABLE_SECTIONS, fullDate, priorityOf, sectionFromText, sectionToText, timeAgo, uiStatus } from './data.js'
 
-export function DetailDrawer({ issue, shown, onClose, onRetry, onDelete, onDownload, onOpenPreview, onRecordUpdate, onMarkStale, onAuthRequired, apiBase }) {
+// The API reports why a saved override is stale; spell out the actual cause
+// instead of always blaming a document-revision change.
+function staleOverrideMessage(meta) {
+  const reasons = meta?.override?.reasons ?? []
+  const details = []
+  if (reasons.includes('document_revision_changed')) {
+    details.push(
+      `the saved document moved from revision ${meta.override.documentRevision ?? '—'} to revision ${meta.documentRevision ?? '—'}`,
+    )
+  }
+  if (reasons.includes('template_changed')) {
+    details.push(
+      `the assignment's template changed from ${meta.override.templateId ?? '—'} v${meta.override.templateVersion ?? '—'} to ${meta.template?.id ?? '—'} v${meta.template?.version ?? '—'}`,
+    )
+  } else if (reasons.includes('template_version_changed')) {
+    details.push(
+      `the assignment is pinned to template version ${meta.template?.version ?? '—'} but the override was saved for version ${meta.override.templateVersion ?? '—'}`,
+    )
+  }
+  const cause = details.length
+    ? `This override is stale because ${details.join('; ')}.`
+    : 'This override no longer matches the saved document or its template.'
+  return `${cause} PDF export will refuse it unless you bypass it explicitly.`
+}
+
+export function DetailDrawer({ issue, shown, onClose, onRetry, onDelete, onDownload, onOpenPreview, onOpenStudio, onRecordUpdate, onMarkStale, onAuthRequired, apiBase }) {
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [showRawJson, setShowRawJson] = useState(false)
   const [exportBusy, setExportBusy] = useState('')
@@ -19,9 +44,14 @@ export function DetailDrawer({ issue, shown, onClose, onRetry, onDelete, onDownl
   const [saveBusy, setSaveBusy] = useState(false)
   const [editError, setEditError] = useState('')
   const [latex, setLatex] = useState(null)
+  const [latexDraft, setLatexDraft] = useState('')
+  const [latexMeta, setLatexMeta] = useState(null)
   const [latexBusy, setLatexBusy] = useState(false)
+  const [latexSaving, setLatexSaving] = useState(false)
+  const [latexNotice, setLatexNotice] = useState('')
   const [latexError, setLatexError] = useState('')
   const [copiedLatex, setCopiedLatex] = useState(false)
+  const [pdfStale, setPdfStale] = useState(null)
   const [optBusy, setOptBusy] = useState(false)
   const [optError, setOptError] = useState('')
   const [previewKey, setPreviewKey] = useState(0)
@@ -90,16 +120,17 @@ export function DetailDrawer({ issue, shown, onClose, onRetry, onDelete, onDownl
     }
   }
 
-  async function exportFile(kind) {
+  async function exportFile(kind, options = {}) {
     const recordId = issue.record?.id
     if (!recordId) return
     setExportBusy(kind)
     setExportError('')
+    if (kind === 'pdf' && options.bypassStaleOverride !== true) setPdfStale(null)
     try {
       const res = await apiFetch(`${apiBase}/api/v1/assignments/${recordId}/${kind}`, {
         method: kind === 'pdf' ? 'POST' : 'GET',
         headers: authHeaders({ 'content-type': 'application/json' }),
-        body: kind === 'pdf' ? '{}' : undefined,
+        body: kind === 'pdf' ? JSON.stringify(options) : undefined,
         signal: AbortSignal.timeout(180000),
       })
       throwIfAuth(res)
@@ -110,6 +141,10 @@ export function DetailDrawer({ issue, shown, onClose, onRetry, onDelete, onDownl
       const ctype = res.headers.get('content-type') ?? ''
       if (!res.ok || ctype.includes('application/json')) {
         const data = await res.json().catch(() => ({}))
+        if (kind === 'pdf' && res.status === 409 && data?.code === 'latex_override_stale') {
+          setPdfStale(data)
+          throw new Error(data?.error ?? 'The saved LaTeX override is stale.')
+        }
         throw new Error(data?.error ?? `Export failed. Please try again.`)
       }
       const blob = await res.blob()
@@ -192,6 +227,7 @@ export function DetailDrawer({ issue, shown, onClose, onRetry, onDelete, onDownl
     if (!recordId) return
     setLatexBusy(true)
     setLatexError('')
+    setLatexNotice('')
     try {
       const res = await apiFetch(`${apiBase}/api/v1/assignments/${recordId}/latex`, {
         headers: authHeaders(),
@@ -201,11 +237,69 @@ export function DetailDrawer({ issue, shown, onClose, onRetry, onDelete, onDownl
       const data = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(failMessage(res, data))
       setLatex(data.latex ?? '')
+      setLatexDraft(data.latex ?? '')
+      setLatexMeta(data)
     } catch (err) {
       setLatexError(err instanceof Error ? err.message : String(err))
     } finally {
       setLatexBusy(false)
     }
+  }
+
+  async function saveLatexOverride() {
+    const recordId = issue.record?.id
+    if (!recordId || !latexDraft.trim()) return
+    setLatexSaving(true)
+    setLatexError('')
+    setLatexNotice('')
+    try {
+      const res = await apiFetch(`${apiBase}/api/v1/assignments/${recordId}/latex`, {
+        method: 'PUT',
+        headers: authHeaders({ 'content-type': 'application/json' }),
+        body: JSON.stringify({ latex: latexDraft }),
+        signal: AbortSignal.timeout(60000),
+      })
+      throwIfAuth(res)
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(failMessage(res, data))
+      setLatexNotice('Saved as the LaTeX override for this saved document revision.')
+      await loadLatex()
+      setLatexNotice('Saved as the LaTeX override for this saved document revision.')
+    } catch (err) {
+      setLatexError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setLatexSaving(false)
+    }
+  }
+
+  async function clearLatexOverride() {
+    const recordId = issue.record?.id
+    if (!recordId) return
+    setLatexSaving(true)
+    setLatexError('')
+    setLatexNotice('')
+    try {
+      const res = await apiFetch(`${apiBase}/api/v1/assignments/${recordId}/latex`, {
+        method: 'DELETE',
+        headers: authHeaders(),
+        signal: AbortSignal.timeout(60000),
+      })
+      throwIfAuth(res)
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(failMessage(res, data))
+      await loadLatex()
+      setLatexNotice('Override cleared. PDF exports use generated LaTeX again.')
+    } catch (err) {
+      setLatexError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setLatexSaving(false)
+    }
+  }
+
+  function useGeneratedLatex() {
+    if (!latexMeta?.generatedLatex) return
+    setLatexDraft(latexMeta.generatedLatex)
+    setLatexNotice('Generated source loaded into the editor. Save it as an override to keep it.')
   }
 
   async function saveOptions(patch) {
@@ -235,10 +329,10 @@ export function DetailDrawer({ issue, shown, onClose, onRetry, onDelete, onDownl
   async function copyLatex() {
     if (latex === null) return
     try {
-      await navigator.clipboard.writeText(latex)
+      await navigator.clipboard.writeText(latexDraft)
     } catch {
       const ta = document.createElement('textarea')
-      ta.value = latex
+      ta.value = latexDraft
       document.body.appendChild(ta)
       ta.select()
       document.execCommand('copy')
@@ -269,6 +363,9 @@ export function DetailDrawer({ issue, shown, onClose, onRetry, onDelete, onDownl
           <span className="rounded-md bg-rail px-2 py-1 text-[11px] font-bold tracking-wide text-ink-500">{issue.key}</span>
           <StatusBadge status={uiStatus(issue)} />
           <span className="ml-auto flex items-center gap-1">
+            <button title="Visual document editor" aria-label="Visual document editor" onClick={onOpenStudio} disabled={!issue.record || stale} className="inline-flex h-9 w-9 items-center justify-center rounded-lg text-ink-500 transition-colors duration-150 hover:bg-rail hover:text-ink-900 disabled:opacity-40">
+              <Icon name="file" className="h-4 w-4" />
+            </button>
             <button title="Download document" aria-label="Download document" onClick={onDownload} disabled={!issue.record || stale} className="inline-flex h-9 w-9 items-center justify-center rounded-lg text-ink-500 transition-colors duration-150 hover:bg-rail hover:text-ink-900 disabled:opacity-40">
               <Icon name="download" className="h-4 w-4" />
             </button>
@@ -538,6 +635,23 @@ export function DetailDrawer({ issue, shown, onClose, onRetry, onDelete, onDownl
                     </Button>
                   </div>
                   {exportError && <p className="mt-2 break-words text-[12px] text-[#8F1D17]">{exportError}</p>}
+                  {pdfStale && (
+                    <div className="mt-2 rounded-lg border border-[#E6C56B] bg-[#FFF8E1] px-2.5 py-2">
+                      <p className="text-[12px] leading-relaxed text-[#6B4E00]">
+                        The saved LaTeX override no longer matches this document revision or template.
+                        Regenerate it below, or export the stale source deliberately.
+                      </p>
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        className="mt-2"
+                        onClick={() => exportFile('pdf', { bypassStaleOverride: true })}
+                        disabled={exportBusy !== ''}
+                      >
+                        Export stale override anyway
+                      </Button>
+                    </div>
+                  )}
                 </section>
               )}
 
@@ -589,19 +703,72 @@ export function DetailDrawer({ issue, shown, onClose, onRetry, onDelete, onDownl
                   </div>
                 {latex !== null && (
                   <div className="mt-2 overflow-hidden rounded-lg border border-line bg-white">
-                    <div className="max-h-[50vh] overflow-auto">
-                      <div className="sticky top-0 z-10 flex items-center justify-between gap-2 border-b border-line-soft bg-paper px-2.5 py-1.5">
-                        <span className="text-[11px] font-bold text-ink-400">latex</span>
-                        <button onClick={copyLatex} className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-[12px] font-semibold text-ink-500 transition-colors hover:bg-rail">
-                          <Icon name={copiedLatex ? 'check' : 'copy'} className="h-3.5 w-3.5" />
-                          {copiedLatex ? 'Copied!' : 'Copy code'}
-                        </button>
-                      </div>
-                      <pre className="whitespace-pre-wrap break-words px-3 py-2.5 font-mono text-[11px] leading-relaxed">{latex}</pre>
+                    <div className="flex flex-wrap items-center gap-1.5 border-b border-line-soft bg-paper px-2.5 py-1.5">
+                      <span
+                        className={cx(
+                          'rounded px-1.5 py-0.5 text-[10.5px] font-bold uppercase tracking-wide',
+                          latexMeta?.source === 'override'
+                            ? 'bg-[#FFF1D6] text-[#6B4E00]'
+                            : 'bg-pine-50 text-pine-800',
+                        )}
+                      >
+                        {latexMeta?.source === 'override' ? 'Saved override' : 'Generated source'}
+                      </span>
+                      {Number.isInteger(latexMeta?.documentRevision) && (
+                        <span className="text-[11px] text-ink-400">document revision {latexMeta.documentRevision}</span>
+                      )}
+                      <button onClick={copyLatex} className="ml-auto inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-[12px] font-semibold text-ink-500 transition-colors hover:bg-rail">
+                        <Icon name={copiedLatex ? 'check' : 'copy'} className="h-3.5 w-3.5" />
+                        {copiedLatex ? 'Copied!' : 'Copy code'}
+                      </button>
                     </div>
-                    <p className="border-t border-line-soft px-2.5 py-1.5 text-[12px] text-ink-400">PDF export compiles this source in an isolated container.</p>
+                    {latexMeta?.source === 'override' && latexMeta?.override?.stale && (
+                      <p className="border-b border-[#E6C56B] bg-[#FFF8E1] px-2.5 py-2 text-[12px] leading-relaxed text-[#6B4E00]">
+                        {staleOverrideMessage(latexMeta)}
+                      </p>
+                    )}
+                    {latexMeta?.source === 'override' && latexMeta?.override?.legacy && (
+                      <p className="border-b border-line-soft bg-paper px-2.5 py-2 text-[12px] leading-relaxed text-ink-500">
+                        Legacy override: it predates revision metadata, so it remains usable but cannot be checked
+                        against newer document edits.
+                      </p>
+                    )}
+                    <textarea
+                      aria-label="LaTeX source"
+                      value={latexDraft}
+                      onChange={(event) => setLatexDraft(event.target.value)}
+                      spellCheck={false}
+                      wrap="off"
+                      className="block max-h-[50vh] min-h-[220px] w-full resize-y overflow-auto bg-white px-3 py-2.5 font-mono text-[11px] leading-relaxed focus:outline-none"
+                    />
+                    <div className="flex flex-wrap items-center gap-1.5 border-t border-line-soft px-2.5 py-2">
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        onClick={saveLatexOverride}
+                        disabled={latexSaving || latexDraft.trim().length < 10}
+                      >
+                        <Icon name="check" className="h-3.5 w-3.5" />
+                        {latexSaving ? 'Saving…' : latexMeta?.source === 'override' ? 'Update override' : 'Save override'}
+                      </Button>
+                      {latexMeta?.source === 'override' && latexMeta?.generatedLatex && (
+                        <Button variant="ghost" size="sm" onClick={useGeneratedLatex} disabled={latexSaving}>
+                          Load generated source
+                        </Button>
+                      )}
+                      {latexMeta?.source === 'override' && (
+                        <Button variant="ghost" size="sm" onClick={clearLatexOverride} disabled={latexSaving}>
+                          Clear override
+                        </Button>
+                      )}
+                    </div>
+                    <p className="border-t border-line-soft px-2.5 py-1.5 text-[12px] text-ink-400">
+                      PDF export compiles the saved override when present; otherwise it compiles generated source.
+                      Both run in an isolated container.
+                    </p>
                   </div>
                 )}
+                {latexNotice && <p className="mt-2 break-words text-[12px] text-pine-800">{latexNotice}</p>}
                 {latexError && <p className="mt-2 break-words text-[12px] text-[#8F1D17]">{latexError}</p>}
                 </section>
               )}
@@ -614,6 +781,10 @@ export function DetailDrawer({ issue, shown, onClose, onRetry, onDelete, onDownl
                     <iframe title={`Document preview for ${issue.key}`} key={previewKey} src={`${apiBase}/api/v1/assignments/${issue.record.id}/html`} className="h-[420px] w-full bg-white" />
                   </div>
                   <div className="mt-2 flex flex-wrap gap-2">
+                    <Button variant="secondary" size="sm" onClick={onOpenStudio}>
+                      <Icon name="file" className="h-4 w-4" />
+                      Visual editor
+                    </Button>
                     <Button variant="secondary" size="sm" onClick={onDownload}>
                       <Icon name="download" className="h-4 w-4" />
                       Download HTML

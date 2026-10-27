@@ -17,6 +17,8 @@
     "name": "TCET Computer Engineering Practical",
     "version": 1,
     "status": "active",
+    "scope": "college",
+    "ownerUserId": null,
     "page": {
       "size": "A4",
       "margin": { "top": "110px", "right": "18mm", "bottom": "20mm", "left": "18mm" }

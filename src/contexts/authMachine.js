@@ -38,6 +38,19 @@ function toUser(payload) {
     name: payload.name ?? "",
     avatarUrl: payload.avatarUrl ?? "",
     id: payload.sub ?? payload.id ?? "",
+    // STAGE 3: the reducer must not drop the persisted role/scope that
+    // AuthContext.userFromMe read from /auth/me. Without these fields the
+    // Admin navigation and scoped template filters disappear after login.
+    // The API remains the authorization boundary; these values only drive
+    // affordances.
+    role: ["user", "college_admin", "platform_admin"].includes(payload.role)
+      ? payload.role
+      : "user",
+    collegeAdminOf: Array.isArray(payload.collegeAdminOf)
+      ? payload.collegeAdminOf.map(String)
+      : [],
+    tenantIds: Array.isArray(payload.tenantIds) ? payload.tenantIds.map(String) : [],
+    preferences: payload.preferences ?? null,
   };
 }
 

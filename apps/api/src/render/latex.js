@@ -1,48 +1,185 @@
-import { WATERMARK_OPACITY } from "./html.js";
+import {
+  WATERMARK_OPACITY,
+  artworkLayout,
+  blockStyle,
+  buildRenderNodes,
+  codeLanguage,
+  facultyTableData,
+  formatNumber,
+  pageGeometry,
+  pxToPt,
+  safeHexColor,
+  typographyConfig,
+} from "./renderModel.js";
 
-// LaTeX renderer (Phase 4). Same sections/order as the HTML renderer.
-// Page frame: tikz border drawn on EVERY page. Watermark: tikz node anchored
-// at the exact page center with opacity 0.5 (50% rule enforced
-// programmatically). Header: fancyhdr with the banner on every page.
-// Faculty table: static template data flushed to the bottom of the last page.
+// LaTeX renderer (Stage 6).
+//
+// The saved `document.blocks` body controls order, edited text and supported
+// formatting. Template fields remain locked presentation: page geometry,
+// header/logo/watermark/footer, page border and typography defaults.
 // Compile ONLY inside an isolated container (see lib/compile.js), never host pdflatex.
 
+const LATEX_LANGUAGES = Object.freeze({
+  sql: "SQL",
+  javascript: "JavaScript",
+  js: "JavaScript",
+  typescript: "Java",
+  ts: "Java",
+  python: "Python",
+  py: "Python",
+  java: "Java",
+  c: "C",
+  "c++": "C++",
+  cpp: "C++",
+  csharp: "C#",
+  "c#": "C#",
+  html: "HTML",
+  css: "CSS",
+  php: "PHP",
+  ruby: "Ruby",
+  bash: "bash",
+  sh: "bash",
+  shell: "bash",
+  go: "Go",
+  rust: "Rust",
+  json: "JSON",
+  xml: "XML",
+});
+
+const LATEX_ESCAPES = Object.freeze({
+  "\\": "\\textbackslash{}",
+  "{": "\\{",
+  "}": "\\}",
+  "$": "\\$",
+  "&": "\\&",
+  "%": "\\%",
+  "#": "\\#",
+  _: "\\_",
+  "^": "\\textasciicircum{}",
+  "~": "\\textasciitilde{}",
+});
+
 export function escapeLatex(value) {
-  return String(value ?? "")
-    .replaceAll("\\", "\\textbackslash{}")
-    .replaceAll("{", "\\{")
-    .replaceAll("}", "\\}")
-    .replaceAll("$", "\\$")
-    .replaceAll("&", "\\&")
-    .replaceAll("%", "\\%")
-    .replaceAll("#", "\\#")
-    .replaceAll("_", "\\_")
-    .replaceAll("^", "\\textasciicircum{}")
-    .replaceAll("~", "\\textasciitilde{}");
+  // Single-pass replacement: escaping a backslash first and then escaping the
+  // braces of \textbackslash{} would turn one backslash into three glyphs.
+  return String(value ?? "").replace(/[\\{}$&%#_^~]/g, (character) => LATEX_ESCAPES[character]);
 }
 
 function safeVerbatim(code) {
   return String(code ?? "").replaceAll("\\end{lstlisting}", "END LISTING");
 }
 
-function facultyTable(t) {
-  const ft = t.facultyTable;
-  if (!ft?.columns?.length) return "";
-  const n = ft.columns.length;
+function pt(px) {
+  return `${formatNumber(pxToPt(px), 2)}pt`;
+}
+
+function wrapBlock(style, content, { font = true, par = true } = {}) {
+  if (!content) return "";
+  let body = content;
+  if (font) {
+    const size = formatNumber(style.fontSizePt, 2);
+    const baseline = formatNumber(style.fontSizePt * style.lineHeight, 2);
+    body = `{\\fontsize{${size}pt}{${baseline}pt}\\selectfont ${body}}`;
+  }
+  if (par && !body.endsWith("\\par")) body = `${body}\\par`;
+  if (style.align === "center") {
+    body = `\\begin{center}\n${body}\n\\end{center}`;
+  } else if (style.align === "right") {
+    body = `\\begin{flushright}\n${body}\n\\end{flushright}`;
+  } else if (style.align === "left") {
+    body = `{\\raggedright\n${body}\\par}`;
+  }
+  if (style.indentPx > 0) {
+    body = `\\begin{adjustwidth}{${pt(style.indentPx)}}{0pt}\n${body}\n\\end{adjustwidth}`;
+  }
+  const before = style.spacingBeforePx > 0 ? `\\vspace*{${pt(style.spacingBeforePx)}}` : "";
+  const after = style.spacingAfterPx > 0 ? `\\vspace{${pt(style.spacingAfterPx)}}` : "";
+  return [before, body, after].filter(Boolean).join("\n");
+}
+
+function listBlock(block, style) {
+  const items = Array.isArray(block.content?.items) ? block.content.items : [];
+  if (!items.length) return "";
+  const env = block.type === "numberedList" ? "enumerate" : "itemize";
+  const body = `\\begin{${env}}\n${items
+    .map((item) => `  \\item ${escapeLatex(item)}`)
+    .join("\n")}\n\\end{${env}}`;
+  return wrapBlock(style, body, { par: false });
+}
+
+function codeBlock(block, style) {
+  const text = String(block.content?.text ?? "");
+  if (!text) return "";
+  const language = codeLanguage(block);
+  const options = [
+    `basicstyle=\\ttfamily\\fontsize{${formatNumber(style.fontSizePt, 2)}pt}{${formatNumber(style.fontSizePt * style.lineHeight, 2)}pt}\\selectfont`,
+  ];
+  const mapped = LATEX_LANGUAGES[language.toLowerCase()];
+  if (mapped) options.push(`language=${mapped}`);
+  const body = `\\begin{lstlisting}[${options.join(",")}]\n${safeVerbatim(text)}\n\\end{lstlisting}`;
+  return wrapBlock(style, body, { font: false, par: false });
+}
+
+function latexBlock(block, template) {
+  if (block.type === "pageBreak") return "\\newpage";
+  if (block.type === "handwrite") return "\\vspace{45mm}";
+  if (block.type === "spacer") {
+    const height = Number.isFinite(block.content?.height) ? block.content.height : 24;
+    return `\\vspace*{${pt(height)}}`;
+  }
+  if (block.type === "bulletList" || block.type === "numberedList") {
+    return listBlock(block, blockStyle(block, template));
+  }
+  if (block.type === "code") {
+    return codeBlock(block, blockStyle(block, template));
+  }
+
+  const style = blockStyle(block, template);
+  const text = escapeLatex(block.content?.text ?? "");
+  if (!text) return "";
+
+  if (block.internal === "vivaHeading") {
+    return "\\section*{Viva Questions}";
+  }
+  if (block.type === "title") {
+    return wrapBlock(style, `{\\bfseries ${text}}`);
+  }
+  if (block.type === "experimentNumber") {
+    if (!block.style || Object.keys(block.style).length === 0) {
+      return `\\begin{center}\n{\\large ${text}}\n\\end{center}\n\\vspace{9pt}`;
+    }
+    return wrapBlock(style, text);
+  }
+  if (block.type === "heading") {
+    return wrapBlock(style, `\\noindent{\\bfseries ${text}}`);
+  }
+  if (block.type === "subheading") {
+    return wrapBlock(style, `\\noindent{\\bfseries ${text}}`);
+  }
+  if (block.type === "paragraph") {
+    return wrapBlock(style, `\\noindent ${text}`);
+  }
+  return "";
+}
+
+function facultyTable(template) {
+  const data = facultyTableData(template);
+  if (!data) return "";
+  const n = data.columns.length;
   const col = `p{${(0.9 / n).toFixed(3)}\\textwidth}`;
   const spec = `|${Array(n).fill(col).join("|")}|`;
-  const head = `${ft.columns.map((c) => `\\textbf{${escapeLatex(c)}}`).join(" & ")} \\\\ \\hline`;
-  const rows = (ft.rows ?? [])
-    .map((r) => {
-      const cells = ft.columns.map((_, i) => {
-        const v = escapeLatex(r[i] ?? "");
-        return v || "\\rule{0pt}{14mm}";
+  const head = `${data.columns.map((c) => `\\textbf{${escapeLatex(c)}}`).join(" & ")} \\\\ \\hline`;
+  const rows = data.rows
+    .map((row) => {
+      const cells = data.columns.map((_, index) => {
+        const value = escapeLatex(row[index] ?? "");
+        return value || "\\rule{0pt}{14mm}";
       });
       return `${cells.join(" & ")} \\\\ \\hline`;
     })
     .join("\n");
   return `\\vfill
-{\\bfseries ${escapeLatex(ft.title ?? "For Faculty Use")}}\\\\[2mm]
+{\\bfseries ${escapeLatex(data.title)}}\\\\[2mm]
 \\begin{center}
 {\\small\\begin{tabular}{${spec}}
 \\hline
@@ -52,70 +189,84 @@ ${rows}
 \\end{center}`;
 }
 
-export function renderLatex(content, template, options = {}) {
-  const t = template?.template ?? {};
-  const includeVivaTitle = options.includeVivaTitle === true;
-  const typedConclusion = options.typedConclusion !== false;
-  const conclusionTex = typedConclusion ? escapeLatex(content.conclusion) : "\\vspace{45mm}";
-  // Viva Questions is a HEADING ONLY when enabled — questions are handwritten by faculty, never generated.
-  const vivaTex = includeVivaTitle ? "\\section*{Viva Questions}\n\\vspace{45mm}" : "";
-  const hasHeader = Boolean(t.header?.image);
-  const hasWatermark = Boolean(t.watermark?.image);
+function borderOptions(border) {
+  if (!border) return "";
+  const options = [`line width=${formatNumber(border.widthPt, 3)}pt`, "draw=docborder"];
+  if (border.style === "double") options.push("double");
+  if (border.style === "dashed") options.push("dash pattern=on 4pt off 2pt");
+  if (border.style === "dotted") options.push("dash pattern=on 1pt off 2pt");
+  return options.join(",");
+}
 
-  const steps = content.steps
-    .map(
-      (s) => `\\subsection*{Step ${s.number}: ${escapeLatex(s.title)}}
-\\begin{itemize}
-${s.description.map((d) => `  \\item ${escapeLatex(d)}`).join("\n")}
-\\end{itemize}
-${s.code ? `\\begin{lstlisting}\n${safeVerbatim(s.code)}\n\\end{lstlisting}` : ""}`,
-    )
-    .join("\n\n");
+export function renderLatex(source, template, options = {}) {
+  const model = buildRenderNodes(source, template, options);
+  const t = model.template;
+  const geometry = pageGeometry(t);
+  const typography = typographyConfig(t);
+  const art = artworkLayout(t, geometry);
+  const border = geometry.border;
+  const footer = t.footer ?? {};
+  const showPageNumber = footer.showPageNumber === true;
+  const footerText = String(footer.text ?? "").trim();
+  const footerCommand = showPageNumber
+    ? footerText
+      ? `\\fancyfoot[C]{${escapeLatex(footerText)}\\quad\\thepage}`
+      : "\\fancyfoot[C]{\\thepage}"
+    : footerText
+      ? `\\fancyfoot[C]{${escapeLatex(footerText)}}`
+      : "\\fancyfoot[C]{}";
+  const borderColor = safeHexColor(border?.color ?? "#111111").slice(1).toUpperCase();
+  const body = model.blocks.map((block) => latexBlock(block, t)).filter(Boolean).join("\n\n");
+  const hasSansFont = /arial|helvetica|sans/i.test(typography.fontFamily);
 
-  return `\\documentclass[a4paper,12pt]{article}
-\\usepackage[margin=25mm,top=52mm,bottom=30mm,headheight=12pt,headsep=6mm]{geometry}
+  return `\\documentclass[12pt]{article}
+\\usepackage[paperwidth=${formatNumber(geometry.width, 2)}mm,paperheight=${formatNumber(geometry.height, 2)}mm,left=${formatNumber(geometry.margin.left, 2)}mm,right=${formatNumber(geometry.margin.right, 2)}mm,top=${formatNumber(geometry.margin.top, 2)}mm,bottom=${formatNumber(geometry.margin.bottom, 2)}mm,headheight=12pt,headsep=6mm]{geometry}
 \\usepackage{graphicx}
 \\usepackage{fancyhdr}
 \\usepackage{eso-pic}
 \\usepackage{tikz}
 \\usepackage{listings}
-\\lstset{basicstyle=\\ttfamily\\small,breaklines=true,breakatwhitespace=true,columns=fullflexible,keepspaces=true}
+\\usepackage{changepage}
 \\usepackage{hyperref}
+${
+  hasSansFont
+    ? "\\IfFileExists{helvet.sty}{\\usepackage{helvet}\\renewcommand{\\familydefault}{\\sfdefault}}{}"
+    : "\\IfFileExists{mathptmx.sty}{\\usepackage{mathptmx}}{}"
+}
+\\lstset{basicstyle=\\ttfamily\\small,breaklines=true,breakatwhitespace=true,columns=fullflexible,keepspaces=true}
+\\linespread{${formatNumber(typography.lineHeight / 1.2, 3)}}\\selectfont
 \\pagestyle{fancy}
 \\fancyhf{}
 \\fancyhead[C]{}
-\\fancyfoot[C]{\\thepage}
+${footerCommand}
+\\definecolor{docborder}{HTML}{${borderColor}}
 \\AddToShipoutPictureBG{%
 \\begin{tikzpicture}[remember picture,overlay]
-\\draw[line width=1.2pt] ([xshift=10mm,yshift=-10mm]current page.north west) rectangle ([xshift=-10mm,yshift=10mm]current page.south east);
-${hasWatermark ? `\\node[opacity=${WATERMARK_OPACITY}] at (current page.center) {\\includegraphics[width=0.55\\paperwidth,keepaspectratio]{watermark.png}};` : ""}
-${hasHeader ? `\\node[anchor=north] at ([yshift=-13mm]current page.north) {\\includegraphics[width=190mm,keepaspectratio]{header.png}};` : ""}
+${
+  border
+    ? `\\draw[${borderOptions(border)}] ([xshift=${geometry.frameInset}mm,yshift=-${geometry.frameInset}mm]current page.north west) rectangle ([xshift=-${geometry.frameInset}mm,yshift=${geometry.frameInset}mm]current page.south east);`
+    : ""
+}
+${
+  art.watermark
+    ? `\\node[opacity=${WATERMARK_OPACITY}] at (current page.center) {\\includegraphics[width=0.4\\paperwidth,keepaspectratio]{${art.watermark.name}}};`
+    : ""
+}
+${
+  art.header
+    ? `\\node[anchor=north] at ([yshift=-${formatNumber(art.header.yMm, 2)}mm]current page.north) {\\includegraphics[width=${formatNumber(art.header.widthMm, 2)}mm,keepaspectratio]{${art.header.name}}};`
+    : ""
+}
+${
+  art.logo
+    ? `\\node[anchor=north west] at ([xshift=${formatNumber(art.logo.xMm, 2)}mm,yshift=-${formatNumber(art.logo.yMm, 2)}mm]current page.north west) {\\includegraphics[height=${formatNumber(art.logo.heightMm, 2)}mm,keepaspectratio]{${art.logo.name}}};`
+    : ""
+}
 \\end{tikzpicture}%
 }
 \\begin{document}
-\\begin{center}
-{\\Large\\bfseries ${escapeLatex(content.title)}}
-${content.experimentNumber ? `\n{\\large Experiment No. ${escapeLatex(content.experimentNumber)}}` : ""}
-\\end{center}
-
-\\section*{Aim}
-${escapeLatex(content.aim)}
-
-\\section*{Objectives}
-\\begin{itemize}
-${content.objectives.map((o) => `  \\item ${escapeLatex(o)}`).join("\n")}
-\\end{itemize}
-
-\\section*{Theory}
-${content.theory.map((p) => escapeLatex(p)).join("\n\n")}
-
-\\section*{Steps}
-${steps}
-
-\\section*{Conclusion}
-${conclusionTex}
-
-${vivaTex}
+\\fontsize{${formatNumber(typography.baseSizePt, 2)}pt}{${formatNumber(typography.baseSizePt * typography.lineHeight, 2)}pt}\\selectfont
+${body}
 
 ${facultyTable(t)}
 \\end{document}

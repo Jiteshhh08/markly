@@ -28,6 +28,13 @@ function userFromMe(data) {
     name: u.name ?? '',
     avatarUrl: u.avatarUrl ?? '',
     id: u.sub ?? u.id ?? '',
+    // STAGE 3: persisted role/scope comes from /auth/me (MongoDB), never from
+    // a JWT claim or a client-supplied value. UI affordances use these fields;
+    // the API still enforces every permission server-side.
+    role: ['user', 'college_admin', 'platform_admin'].includes(u.role) ? u.role : 'user',
+    collegeAdminOf: Array.isArray(u.collegeAdminOf) ? u.collegeAdminOf.map(String) : [],
+    tenantIds: Array.isArray(u.tenantIds) ? u.tenantIds.map(String) : [],
+    preferences: u.preferences ?? null,
   }
 }
 

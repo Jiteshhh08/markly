@@ -1,9 +1,9 @@
 import { execFile } from "node:child_process";
-import { copyFileSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { resolveAsset } from "./storage.js";
+import { artworkLayout } from "../render/renderModel.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -13,12 +13,14 @@ const execFileAsync = promisify(execFile);
 // machine with native Docker:  docker run --rm -v "{dir}:/work" -w /work texlive/texlive:latest ...
 // From Windows with Docker inside WSL, use the {wslDir} placeholder (cmd.exe
 // cannot do $(wslpath) interpolation, so Node translates the path itself):
-//   wsl docker run --rm -v "{wslDir}:/work" -w /work texlive/texlive:latest pdflatex -interaction=nonstopmode -halt-on-error doc
+//   wsl docker run --rm -v "{wslDir}:/work" -w /work texlive/texlive:latest pdflatex -no-shell-escape -interaction=nonstopmode -halt-on-error doc
+// Custom commands MUST include -no-shell-escape: saved LaTeX overrides are
+// untrusted input, and shell-escape would let them run host/container commands.
 // Compilation failures return { ok: false } with the compiler output attached.
 
 const DEFAULT_CMD =
   process.env.PDF_COMPILE_CMD ||
-  'docker run --rm -v "{dir}:/work" -w /work texlive/texlive:latest pdflatex -interaction=nonstopmode -halt-on-error doc.tex';
+  'docker run --rm -v "{dir}:/work" -w /work texlive/texlive:latest pdflatex -no-shell-escape -interaction=nonstopmode -halt-on-error doc.tex';
 
 // Compiler preflight: which docker and which image to look for. Checked BEFORE
 // every compile so a missing image produces "pull it" instructions instead of
@@ -63,12 +65,29 @@ export function fillCmd(dir) {
 export async function compileLatexToPdf(tex, template, workDir) {
   const dir = workDir ?? mkdtempSync(join(tmpdir(), "Markly-tex-"));
   try {
-    writeFileSync(join(dir, "doc.tex"), tex);
-    // Asset filenames are fixed so \includegraphics{header.png} resolves.
-    const header = resolveAsset(template?.template?.header?.image);
-    const wm = resolveAsset(template?.template?.watermark?.image);
-    if (header) copyFileSync(header, join(dir, "header.png"));
-    if (wm) copyFileSync(wm, join(dir, "watermark.png"));
+    // Staged filenames match the extensions the LaTeX renderer actually emits.
+    // A template banner may be JPEG bytes behind a .png name; using intrinsic
+    // type avoids a "cannot determine size" failure inside the compiler.
+    const art = artworkLayout(template);
+    const assets = [
+      ["header", art.header],
+      ["logo", art.logo],
+      ["watermark", art.watermark],
+    ].filter(([, asset]) => Boolean(asset));
+    // Older saved overrides reference the fixed `header.png`/`watermark.png`
+    // names. Keep them compiling by pointing those references at the real
+    // staged filename without touching any other source text.
+    const legacyAliases = assets
+      .filter(([kind, asset]) => asset.name !== `${kind}.png`)
+      .map(([kind, asset]) => [`{${kind}.png}`, `{${asset.name}}`]);
+    const stagedTex = legacyAliases.reduce(
+      (source, [from, to]) => source.replaceAll(from, to),
+      tex,
+    );
+    writeFileSync(join(dir, "doc.tex"), stagedTex);
+    for (const [, asset] of assets) {
+      writeFileSync(join(dir, asset.name), asset.image.buffer);
+    }
 
     const cmd = fillCmd(dir);
     try {

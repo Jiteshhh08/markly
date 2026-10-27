@@ -42,7 +42,7 @@ describe("LaTeX renderer", () => {
   });
   it("spans the header full width, keeps footer to page number only, left-aligns faculty title", () => {
     const tex = renderLatex(doc, getDefaultTemplate());
-    assert.ok(tex.includes("\\includegraphics[width=190mm,keepaspectratio]{header.png}"), "header must span the full inner frame width");
+    assert.ok(tex.includes("\\includegraphics[width=190mm,keepaspectratio]{header.jpg}"), "header must span the full inner frame width using its real raster type");
     assert.ok(tex.includes("anchor=north") && tex.includes("yshift=-13mm"), "header must pin just inside the border top");
     assert.ok(tex.includes("\\fancyfoot[C]{\\thepage}"), "footer must be page number only");
     assert.ok(!tex.includes("Thakur College"), "footer college text must be gone");
@@ -122,6 +122,31 @@ describe("PDF compiler", () => {
       const out = await compileLatexToPdf("\\documentclass{article}\\begin{document}hi\\end{document}", null);
       assert.equal(out.ok, false);
       assert.ok(out.error.length > 0, "expected an explanatory error, not a crash");
+    } finally {
+      if (prev === undefined) delete process.env.PDF_COMPILE_CMD;
+      else process.env.PDF_COMPILE_CMD = prev;
+    }
+  });
+
+  it("keeps legacy override asset references compiling with the real staged extension", async () => {
+    const prev = process.env.PDF_COMPILE_CMD;
+    process.env.PDF_COMPILE_CMD =
+      'node -e "const fs=require(\'fs\');fs.writeFileSync(\'doc.pdf\',fs.readFileSync(\'doc.tex\'))"';
+    try {
+      const legacy = [
+        "\\documentclass{article}",
+        "\\usepackage{graphicx}",
+        "\\begin{document}",
+        "\\includegraphics[width=190mm]{header.png}",
+        "\\includegraphics[width=84mm]{watermark.png}",
+        "\\end{document}",
+      ].join("\n");
+      const out = await compileLatexToPdf(legacy, getDefaultTemplate());
+      assert.equal(out.ok, true, out.error);
+      const staged = out.pdf.toString("utf8");
+      assert.ok(staged.includes("{header.jpg}"), "legacy header.png must resolve to the staged JPEG");
+      assert.ok(staged.includes("{watermark.png}"), "a real PNG watermark must keep its name");
+      assert.ok(!staged.includes("{header.png}"), "the missing legacy filename must not remain");
     } finally {
       if (prev === undefined) delete process.env.PDF_COMPILE_CMD;
       else process.env.PDF_COMPILE_CMD = prev;

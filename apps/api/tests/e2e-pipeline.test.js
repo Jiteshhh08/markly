@@ -38,13 +38,16 @@ function testDbUri() {
 }
 
 async function cleanupE2E(createdIds = []) {
-  const { Assignment, User } = await import("../src/models/index.js");
+  const { Assignment, Department, Template, Tenant, User } = await import("../src/models/index.js");
   // Prefix-scoped + explicitly tracked route-generated ids (real
   // `POST /generate` mints `asg_<ts>_<n>` ids with no test prefix).
   await Assignment.deleteMany({
     $or: [{ recordId: /^asg_e2e/ }, ...(createdIds.length ? [{ recordId: { $in: createdIds } }] : [])],
   });
   await User.deleteMany({ email: /^e2e-.*@example\.com$/ });
+  await Department.deleteMany({ id: /^e2e-/ });
+  await Template.deleteMany({ id: /^e2e-/ });
+  await Tenant.deleteMany({ id: /^e2e-/ });
 }
 
 // Deterministic stub AI: always returns schema-valid Assignment JSON.
@@ -160,6 +163,42 @@ before(async () => {
   process.env.AI_SERVICE_URL = `http://127.0.0.1:${stub.address().port}`;
   await mongoose.connect(testDbUri(), { serverSelectionTimeoutMS: 15000 });
   await cleanupE2E();
+
+  // STAGE 4: a Mongo-backed user needs a college/branch before generation.
+  // Seed an isolated college, branch and published template (never production).
+  const { Department, Template, Tenant } = await import("../src/models/index.js");
+  await Tenant.create({
+    id: "e2e-college",
+    name: "E2E College",
+    slug: "e2e-college",
+    status: "active",
+  });
+  await Department.create({
+    id: "e2e-branch",
+    tenantId: "e2e-college",
+    name: "E2E Branch",
+    slug: "e2e-branch",
+    status: "active",
+    defaultTemplateId: "e2e-template",
+    defaultTemplateVersion: 1,
+  });
+  await Template.create({
+    id: "e2e-template",
+    version: 1,
+    name: "E2E Template",
+    status: "active",
+    scope: "college",
+    tenantId: "e2e-college",
+    departmentId: "e2e-branch",
+    ownerUserId: null,
+    page: {
+      size: "A4",
+      margin: { top: "110px", right: "18mm", bottom: "20mm", left: "18mm" },
+    },
+    typography: { fontFamily: "Georgia, serif", baseSize: "12pt", lineHeight: 1.6 },
+    requiredSections: ["title", "aim", "objectives", "theory", "steps", "conclusion"],
+  });
+
   await new Promise((resolve) => {
     server = app.listen(0, "127.0.0.1", resolve);
   });
@@ -197,9 +236,22 @@ describe("STAGE7 e2e pipeline (register → generate → persist → logout)", (
     });
     assert.equal(reg.status, 201);
     cookie = sessionCookie(reg.setCookies);
+    const pref = await raw("PUT", "/api/v1/preferences", {
+      body: {
+        collegeId: "e2e-college",
+        departmentId: "e2e-branch",
+        preferredTemplateId: null,
+        preferredTemplateVersion: null,
+      },
+      cookie,
+    });
+    assert.equal(pref.status, 200, JSON.stringify(pref.data));
+    assert.equal(pref.data.setupCompleted, true);
     const me = await raw("GET", "/api/v1/auth/me", { cookie });
     assert.equal(me.status, 200);
     assert.equal(me.data.user.email, e2eEmail);
+    assert.equal(me.data.user.preferences.collegeId, "e2e-college");
+    assert.equal(me.data.user.preferences.departmentId, "e2e-branch");
   });
 
   it("generate after refresh succeeds (the reported bug, end to end)", async () => {

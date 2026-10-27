@@ -146,6 +146,45 @@ describe("STAGE3 auth machine transitions", () => {
     assert.equal(keptNet.user.email, "stu@college.edu");
   });
 
+  it("(15) preserves persisted role and college scope through the reducer", () => {
+    const state = authReducer(createInitialAuthState(), {
+      type: "BOOT_OK",
+      user: {
+        sub: "usr_college_admin",
+        email: "admin@college.edu",
+        name: "College Admin",
+        role: "college_admin",
+        collegeAdminOf: ["college-a"],
+        tenantIds: ["college-a"],
+        preferences: {
+          collegeId: "college-a",
+          departmentId: "branch-a1",
+          preferredTemplateId: "tpl-a1",
+          preferredTemplateVersion: 2,
+          setupCompletedAt: "2026-01-02T03:04:05.000Z",
+        },
+      },
+    });
+    assert.equal(state.user.role, "college_admin");
+    assert.deepEqual(state.user.collegeAdminOf, ["college-a"]);
+    assert.deepEqual(state.user.tenantIds, ["college-a"]);
+    assert.deepEqual(state.user.preferences, {
+      collegeId: "college-a",
+      departmentId: "branch-a1",
+      preferredTemplateId: "tpl-a1",
+      preferredTemplateVersion: 2,
+      setupCompletedAt: "2026-01-02T03:04:05.000Z",
+    });
+
+    const ordinary = authReducer(createInitialAuthState(), {
+      type: "LOGIN_OK",
+      user: { email: "stu@college.edu", role: "not-a-real-role" },
+    });
+    assert.equal(ordinary.user.role, "user", "unknown roles must degrade to the least privilege");
+    assert.deepEqual(ordinary.user.collegeAdminOf, []);
+    assert.deepEqual(ordinary.user.tenantIds, []);
+  });
+
   it("logout clears everything; only 401 classifies as unauthorized", () => {
     const authed = authReducer(createInitialAuthState(), {
       type: "LOGIN_OK",
